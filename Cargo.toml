@@ -1,0 +1,8 @@
+[package]
+name = "tokio-from-first-principles"
+version = "0.1.0"
+authors = ["plhk"]
+
+[dependencies]
+futures = "0.2"
+libc = "0.2"
