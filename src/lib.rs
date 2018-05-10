@@ -4,6 +4,8 @@ extern crate libc;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::mem::zeroed;
+use std::collections::VecDeque;
+
 use libc::{fd_set, FD_ZERO, FD_ISSET, FD_SET, FD_CLR, select, timeval};
 use futures::{Future, FutureExt};
 use futures::executor::Executor;
@@ -15,6 +17,7 @@ use futures::task::Context;
 use futures::Async;
 use futures::io::Error;
 use futures::executor::block_on;
+use futures::Never;
 use futures::task::{Waker, Wake};
 
 use std::thread::sleep;
@@ -48,21 +51,47 @@ impl EventLoop {
 		EventLoop(outer)
 	}
 
-	pub fn run<F: Future<Item = (), Error = ()>>(self, f: F) {
+	pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
 		self.0.borrow().run(f)
 	}
 }
 
+#[derive(Debug)]
+struct Token(usize);
+
+impl Wake for Token {
+	fn wake(arc_self: &Arc<Token>) {
+		println!("waking {:?}", arc_self);
+
+		let Token(idx) = **arc_self;
+
+		REACTOR.with(|reactor| {
+			if let Some(ref reactor) = *reactor.borrow() {
+				reactor.borrow().wake(idx)
+			}
+		});
+
+	}
+}
+
+
 struct InnerEventLoop {
 	read: RefCell<BTreeMap<RawFd, Waker>>,
 	write: RefCell<BTreeMap<RawFd, Waker>>,
+	counter: RefCell<usize>,
+	wait_queue: RefCell<Vec<Box<Future<Item = (), Error = ()> + 'static>>>,
+	run_queue: RefCell<VecDeque<usize>>,
 }
+
 
 impl InnerEventLoop {
 	pub fn new() -> Self {
 		InnerEventLoop {
 			read: RefCell::new(BTreeMap::new()),
 			write: RefCell::new(BTreeMap::new()),
+			counter: RefCell::new(0),
+			wait_queue: RefCell::new(Vec::new()),
+			run_queue: RefCell::new(VecDeque::new())
 		}
 	}
 
@@ -80,7 +109,17 @@ impl InnerEventLoop {
 		}
 	}
 
-	pub fn run<F: Future<Item = (), Error = ()>>(&self, mut f: F) {
+	fn wake(&self, idx: usize) {
+		self.run_queue.borrow_mut().push_back(idx);
+	}
+
+	fn next_task(&self) -> Waker {
+		let w = Arc::new(Token(*self.counter.borrow()));
+		*self.counter.borrow_mut() += 1;
+		Waker::from(w)
+	}
+
+	pub fn run<F: Future<Item = (), Error = ()> + 'static>(&self, mut f: F) {
 		use futures::task::LocalMap;
     	use futures::executor::LocalPool;
 
@@ -89,14 +128,7 @@ impl InnerEventLoop {
 
 		let mut map = LocalMap::new();
 
-		struct W;
-
-		impl Wake for W {
-			fn wake(arc_self: &Arc<W>) {
-				println!("waking")
-			}
-		}
-		let waker = Waker::from(Arc::new(W));
+		let waker = self.next_task();
 		let mut context = Context::new(&mut map, &waker, &mut exec);
 
 		match f.poll(&mut context) {
@@ -111,6 +143,8 @@ impl InnerEventLoop {
 				panic!("error in future");
 			}
 		}
+
+		self.wait_queue.borrow_mut().push(Box::new(f));
 
 		loop {
 			println!("select loop start");
@@ -167,16 +201,21 @@ impl InnerEventLoop {
 				}
 			}
 
-			match f.poll(&mut context) {
-				Ok(Async::Ready(_)) => {
-					println!("done");
-					return;
-				}
-				Ok(Async::Pending) => {
-					println!("future not yet ready");
-				}
-				Err(_) => {
-					panic!("error in future");
+			while let Some(idx) = self.run_queue.borrow_mut().pop_front() {
+				println!("polling future at index {}", idx);
+				if let Some(future) = self.wait_queue.borrow_mut().get_mut(idx) {
+					match future.poll(&mut context) {
+						Ok(Async::Ready(_)) => {
+							println!("done");
+							return;
+						}
+						Ok(Async::Pending) => {
+							println!("future not yet ready");
+						}
+						Err(_) => {
+							panic!("error in future");
+						}
+					}
 				}
 			}
 		}
@@ -194,24 +233,6 @@ impl AsyncTcpStream {
 	}
 }
 
-struct NewAsyncTcpStream<A: ToSocketAddrs>(A);
-
-impl<A: ToSocketAddrs> Future for NewAsyncTcpStream<A> {
-	type Item = AsyncTcpStream;
-	type Error = std::io::Error;
-
-	fn poll(
-        &mut self, 
-        cx: &mut Context
-    ) -> Result<Async<Self::Item>, Self::Error> {
-		let inner = TcpStream::connect(&self.0)?;
-
-		inner.set_nonblocking(true)?;
-
-		Ok(Async::Ready(AsyncTcpStream(inner)))
-    }
-}
-
 impl AsyncRead for AsyncTcpStream {
 	fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Result<Async<usize>, Error> {
 		println!("poll_read() called");
@@ -221,7 +242,6 @@ impl AsyncRead for AsyncTcpStream {
 
 		match self.0.read(buf) {
 			Ok(len) =>{
-				println!("BUF {:?}", buf);
 				Ok(Async::Ready(len))
 			},
 			Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -233,7 +253,7 @@ impl AsyncRead for AsyncTcpStream {
 
 				Ok(Async::Pending)
 			}
-			Err(err) => unimplemented!(),
+			Err(err) => panic!("error {:?}", err),
 		}
 	}
 }
@@ -260,16 +280,16 @@ impl AsyncWrite for AsyncTcpStream {
 
 				Ok(Async::Pending)
 			}
-			Err(err) => unimplemented!(),
+			Err(err) => panic!("error {:?}", err),
 		}
 	}
 
-	fn poll_flush(&mut self, cx: &mut Context) -> Result<Async<()>, Error> {
+	fn poll_flush(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
 		println!("poll_flush() called");
 		Ok(Async::Ready(()))
 	}	
 
-	fn poll_close(&mut self, cx: &mut Context) -> Result<Async<()>, Error> {
+	fn poll_close(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
 		println!("poll_close() called");
 		Ok(Async::Ready(()))
 	}	
@@ -278,22 +298,19 @@ impl AsyncWrite for AsyncTcpStream {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::thread;
 
     #[test]
     fn it_works() {
 		let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
 		println!("running");
-		//let data: Vec<u8> = (0..1000).map(|_| b'a').collect();
 		let data = b"hello world\n";
 		let mut buf = vec![0; 128];
 		let future = stream.write_all(data)
-			.and_then(|(stream, _)| {
-				stream.read(&mut buf)
-			})
-			.and_then(|(stream, buf, _)| {
-				println!("{:?}", buf);
-				Ok(())
+			.and_then(move |(stream, _)| {
+				stream.read(buf).and_then(move |(_, buf, len)| {
+					println!("READ: {}", String::from_utf8_lossy(&buf[0..len]));
+					Ok(())
+				})
 			})
 			.then(|_| Ok(()));
 		let ev_loop = EventLoop::new();
