@@ -75,7 +75,7 @@ impl Wake for Token {
 struct InnerEventLoop {
     read: BTreeMap<RawFd, Waker>,
     write: BTreeMap<RawFd, Waker>,
-    counter: RefCell<usize>,
+    counter: usize,
     wait_queue: RefCell<Vec<Box<Future<Item = (), Error = ()> + 'static>>>,
     run_queue: RefCell<VecDeque<usize>>,
 }
@@ -85,7 +85,7 @@ impl InnerEventLoop {
         InnerEventLoop {
             read: BTreeMap::new(),
             write: BTreeMap::new(),
-            counter: RefCell::new(0),
+            counter: 0,
             wait_queue: RefCell::new(Vec::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
@@ -111,9 +111,9 @@ impl InnerEventLoop {
         self.run_queue.borrow_mut().push_back(idx);
     }
 
-    fn next_task(&self) -> Waker {
-        let w = Arc::new(Token(*self.counter.borrow()));
-        *self.counter.borrow_mut() += 1;
+    fn next_task(&mut self) -> Waker {
+        let w = Arc::new(Token(self.counter));
+        self.counter += 1;
         Waker::from(w)
     }
 
