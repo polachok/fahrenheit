@@ -1,5 +1,8 @@
 extern crate futures;
 extern crate libc;
+#[macro_use]
+extern crate log;
+extern crate pretty_env_logger;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -86,11 +89,11 @@ impl Task {
 
         match self.future.poll(&mut context) {
             Ok(Async::Ready(_)) => {
-                println!("future done");
+                debug!("future done");
                 Async::Ready(())
             }
             Ok(Async::Pending) => {
-                println!("future not yet ready");
+                debug!("future not yet ready");
                 Async::Pending
             }
             Err(_) => {
@@ -148,7 +151,7 @@ impl InnerEventLoop {
     }
 
     fn add_read_interest(&self, fd: RawFd, waker: Waker) {
-        println!("adding read interest for {}", fd);
+        debug!("adding read interest for {}", fd);
 
         if !self.read.borrow().contains_key(&fd) {
             self.read.borrow_mut().insert(fd, waker);
@@ -156,20 +159,20 @@ impl InnerEventLoop {
     }
 
     fn remove_read_interest(&self, fd: RawFd) {
-        println!("removing read interest for {}", fd);
+        debug!("removing read interest for {}", fd);
 
         self.read.borrow_mut().remove(&fd);
     }
 
 
     fn remove_write_interest(&self, fd: RawFd) {
-        println!("removing write interest for {}", fd);
+        debug!("removing write interest for {}", fd);
 
         self.write.borrow_mut().remove(&fd);
     }
 
     fn add_write_interest(&self, fd: RawFd, waker: Waker) {
-        println!("adding write interest for {}", fd);
+        debug!("adding write interest for {}", fd);
 
         if !self.write.borrow().contains_key(&fd) {
             self.write.borrow_mut().insert(fd, waker);
@@ -201,7 +204,7 @@ impl InnerEventLoop {
         self.do_spawn(f);
 
         loop {
-            println!("select loop start");
+            debug!("select loop start");
 
             let mut tv: timeval = timeval {
                 tv_sec: 1,
@@ -217,13 +220,13 @@ impl InnerEventLoop {
             let mut nfds = 0;
 
             for fd in self.read.borrow().keys() {
-                println!("added fd {} for read", fd);
+                debug!("added fd {} for read", fd);
                 unsafe { FD_SET(*fd, &mut read_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
             }
 
             for fd in self.write.borrow().keys() {
-                println!("added fd {} for write", fd);
+                debug!("added fd {} for write", fd);
                 unsafe { FD_SET(*fd, &mut write_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
             }
@@ -240,14 +243,14 @@ impl InnerEventLoop {
             if rv == -1 {
                 panic!("select()");
             } else if rv == 0 {
-                println!("timeout");
+                debug!("timeout");
             } else {
-                println!("data available on {} fds", rv);
+                debug!("data available on {} fds", rv);
             }
 
             for (fd, waker) in self.read.borrow().iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut read_fds as *mut fd_set) };
-                println!("fd {} set (read)", fd);
+                debug!("fd#{} set (read)", fd);
                 if is_set {
                     waker.wake();
                 }
@@ -255,7 +258,7 @@ impl InnerEventLoop {
 
             for (fd, waker) in self.write.borrow().iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut write_fds as *mut fd_set) };
-                println!("fd {} set (write)", fd);
+                debug!("fd#{} set (write)", fd);
                 if is_set {
                     waker.wake();
                 }
@@ -264,7 +267,7 @@ impl InnerEventLoop {
             let mut tasks_done = Vec::new();
 
             while let Some(w) = self.run_queue.borrow_mut().pop_front() {
-                println!("polling future at index {}", w.index);
+                debug!("polling task#{}", w.index);
 
                 let mut handle = self.handle();
 
@@ -276,7 +279,7 @@ impl InnerEventLoop {
             }
 
             for idx in tasks_done {
-                println!("removing {} task", idx);
+                info!("removing task#{}", idx);
                 self.wait_queue.borrow_mut().remove(idx);
             }
 
@@ -324,7 +327,7 @@ impl Drop for AsyncTcpStream {
 
 impl AsyncRead for AsyncTcpStream {
     fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Result<Async<usize>, Error> {
-        println!("poll_read() called");
+        debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
         let waker = cx.waker();
@@ -347,7 +350,7 @@ impl AsyncRead for AsyncTcpStream {
 
 impl AsyncWrite for AsyncTcpStream {
     fn poll_write(&mut self, cx: &mut Context, buf: &[u8]) -> Result<Async<usize>, Error> {
-        println!("poll_write() called");
+        debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();
         let waker = cx.waker();
@@ -368,12 +371,12 @@ impl AsyncWrite for AsyncTcpStream {
     }
 
     fn poll_flush(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
-        println!("poll_flush() called");
+        debug!("poll_flush() called");
         Ok(Async::Ready(()))
     }
 
     fn poll_close(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
-        println!("poll_close() called");
+        debug!("poll_close() called");
         Ok(Async::Ready(()))
     }
 }
@@ -384,6 +387,8 @@ mod tests {
 
     #[test]
     fn it_works() {
+        pretty_env_logger::init();
+
         let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
         println!("running");
         let data = b"hello world\n";
