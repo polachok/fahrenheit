@@ -37,9 +37,9 @@ thread_local! {
 }
 
 #[derive(Clone)]
-struct EventLoop(Rc<RefCell<InnerEventLoop>>);
+struct Core(Rc<RefCell<InnerEventLoop>>);
 
-impl EventLoop {
+impl Core {
     pub fn new() -> Self {
         let inner = InnerEventLoop::new();
         let outer = Rc::new(RefCell::new(inner));
@@ -48,7 +48,7 @@ impl EventLoop {
             std::mem::replace(&mut *ev.borrow_mut(), Some(outer.clone()));
         });
 
-        EventLoop(outer)
+        Core(outer)
     }
 
     pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
@@ -276,7 +276,12 @@ impl InnerEventLoop {
             }
 
             for idx in tasks_done {
+                println!("removing {} task", idx);
                 self.wait_queue.borrow_mut().remove(idx);
+            }
+
+            if self.wait_queue.borrow().is_empty() {
+                return;
             }
         }
     }
@@ -292,12 +297,14 @@ impl Executor for InnerEventLoop {
     }
 }
 
+// AsyncTcpStream just wraps std tcp stream
 #[derive(Debug)]
 struct AsyncTcpStream(TcpStream);
 
 impl AsyncTcpStream {
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<AsyncTcpStream, std::io::Error> {
         let inner = TcpStream::connect(addr)?;
+
         inner.set_nonblocking(true)?;
         Ok(AsyncTcpStream(inner))
     }
@@ -390,7 +397,7 @@ mod tests {
                 })
             })
             .then(|_| Ok(()));
-        let ev_loop = EventLoop::new();
-        ev_loop.run(future);
+        let core = Core::new();
+        core.run(future);
     }
 }
