@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use libc::{fd_set, select, timeval, FD_CLR, FD_ISSET, FD_SET, FD_ZERO};
 use futures::{Future, FutureExt};
-use futures::executor::Executor;
+use futures::executor::{Executor, SpawnError};
 use futures::io::AsyncWrite;
 use futures::io::AsyncWriteExt;
 use futures::io::AsyncRead;
@@ -16,7 +16,6 @@ use futures::io::AsyncReadExt;
 use futures::task::Context;
 use futures::Async;
 use futures::io::Error;
-use futures::executor::block_on;
 use futures::Never;
 use futures::task::{Wake, Waker};
 
@@ -52,7 +51,7 @@ impl EventLoop {
     }
 
     pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
-        self.0.borrow().run(f)
+        self.0.borrow_mut().run(f)
     }
 }
 
@@ -74,8 +73,8 @@ impl Wake for Token {
 }
 
 struct InnerEventLoop {
-    read: RefCell<BTreeMap<RawFd, Waker>>,
-    write: RefCell<BTreeMap<RawFd, Waker>>,
+    read: BTreeMap<RawFd, Waker>,
+    write: BTreeMap<RawFd, Waker>,
     counter: RefCell<usize>,
     wait_queue: RefCell<Vec<Box<Future<Item = (), Error = ()> + 'static>>>,
     run_queue: RefCell<VecDeque<usize>>,
@@ -84,25 +83,27 @@ struct InnerEventLoop {
 impl InnerEventLoop {
     pub fn new() -> Self {
         InnerEventLoop {
-            read: RefCell::new(BTreeMap::new()),
-            write: RefCell::new(BTreeMap::new()),
+            read: BTreeMap::new(),
+            write: BTreeMap::new(),
             counter: RefCell::new(0),
             wait_queue: RefCell::new(Vec::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
     }
 
-    fn add_read_interest(&self, fd: RawFd, waker: Waker) {
+    fn add_read_interest(&mut self, fd: RawFd, waker: Waker) {
         println!("adding read interest for {}", fd);
-        if !self.read.borrow().contains_key(&fd) {
-            self.read.borrow_mut().insert(fd, waker);
+
+        if !self.read.contains_key(&fd) {
+            self.read.insert(fd, waker);
         }
     }
 
-    fn add_write_interest(&self, fd: RawFd, waker: Waker) {
+    fn add_write_interest(&mut self, fd: RawFd, waker: Waker) {
         println!("adding write interest for {}", fd);
-        if !self.read.borrow().contains_key(&fd) {
-            self.write.borrow_mut().insert(fd, waker);
+
+        if !self.write.contains_key(&fd) {
+            self.write.insert(fd, waker);
         }
     }
 
@@ -116,32 +117,34 @@ impl InnerEventLoop {
         Waker::from(w)
     }
 
-    pub fn run<F: Future<Item = (), Error = ()> + 'static>(&self, mut f: F) {
+    fn do_spawn<F: Future<Item = (), Error = ()> + 'static>(&mut self, mut f: F) {
         use futures::task::LocalMap;
-        use futures::executor::LocalPool;
-
-        let pool = LocalPool::new();
-        let mut exec = pool.executor();
 
         let mut map = LocalMap::new();
 
         let waker = self.next_task();
-        let mut context = Context::new(&mut map, &waker, &mut exec);
+        {
+            let mut context = Context::new(&mut map, &waker, self);
 
-        match f.poll(&mut context) {
-            Ok(Async::Ready(_)) => {
-                println!("done");
-                return;
-            }
-            Ok(Async::Pending) => {
-                println!("future not yet ready");
-            }
-            Err(_) => {
-                panic!("error in future");
+            match f.poll(&mut context) {
+                Ok(Async::Ready(_)) => {
+                    println!("done");
+                    return;
+                }
+                Ok(Async::Pending) => {
+                    println!("future not yet ready");
+                }
+                Err(_) => {
+                    panic!("error in future");
+                }
             }
         }
 
         self.wait_queue.borrow_mut().push(Box::new(f));
+    }
+
+    pub fn run<F: Future<Item = (), Error = ()> + 'static>(&mut self, mut f: F) {
+        self.do_spawn(f);
 
         loop {
             println!("select loop start");
@@ -159,13 +162,13 @@ impl InnerEventLoop {
 
             let mut nfds = 0;
 
-            for fd in self.read.borrow().keys() {
+            for fd in self.read.keys() {
                 println!("added fd {} for read", fd);
                 unsafe { FD_SET(*fd, &mut read_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
             }
 
-            for fd in self.write.borrow().keys() {
+            for fd in self.write.keys() {
                 println!("added fd {} for write", fd);
                 unsafe { FD_SET(*fd, &mut write_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
@@ -188,7 +191,7 @@ impl InnerEventLoop {
                 println!("data available on {} fds", rv);
             }
 
-            for (fd, waker) in self.read.borrow().iter() {
+            for (fd, waker) in self.read.iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut read_fds as *mut fd_set) };
                 println!("fd {} set (read)", fd);
                 if is_set {
@@ -196,7 +199,7 @@ impl InnerEventLoop {
                 }
             }
 
-            for (fd, waker) in self.write.borrow().iter() {
+            for (fd, waker) in self.write.iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut write_fds as *mut fd_set) };
                 println!("fd {} set (write)", fd);
                 if is_set {
@@ -207,6 +210,7 @@ impl InnerEventLoop {
             while let Some(idx) = self.run_queue.borrow_mut().pop_front() {
                 println!("polling future at index {}", idx);
                 if let Some(future) = self.wait_queue.borrow_mut().get_mut(idx) {
+                    /*
                     match future.poll(&mut context) {
                         Ok(Async::Ready(_)) => {
                             println!("done");
@@ -219,9 +223,20 @@ impl InnerEventLoop {
                             panic!("error in future");
                         }
                     }
+                    */
                 }
             }
         }
+    }
+}
+
+impl Executor for InnerEventLoop {
+    fn spawn(
+        &mut self,
+        f: Box<Future<Item = (), Error = Never> + 'static + Send>
+    ) -> Result<(), SpawnError> {
+        self.do_spawn(f.map_err(|never| never.never_into()));
+        Ok(())
     }
 }
 
@@ -248,7 +263,7 @@ impl AsyncRead for AsyncTcpStream {
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 REACTOR.with(|reactor| {
                     if let Some(ref reactor) = *reactor.borrow() {
-                        reactor.borrow().add_read_interest(fd, waker.clone())
+                        reactor.borrow_mut().add_read_interest(fd, waker.clone())
                     }
                 });
 
@@ -271,7 +286,7 @@ impl AsyncWrite for AsyncTcpStream {
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 REACTOR.with(|reactor| {
                     if let Some(ref reactor) = *reactor.borrow() {
-                        reactor.borrow().add_write_interest(fd, waker.clone())
+                        reactor.borrow_mut().add_write_interest(fd, waker.clone())
                     }
                 });
 
