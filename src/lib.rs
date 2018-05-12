@@ -30,14 +30,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+// reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
     static REACTOR: RefCell<Option<Rc<RefCell<InnerEventLoop>>>> = RefCell::new(None);
 }
 
+// The Core is just a wrapper around InnerEventLoop
+// where everything happens.
 #[derive(Clone)]
 pub struct Core(Rc<RefCell<InnerEventLoop>>);
 
 impl Core {
+    // Create the inner event loop and save it into thread local
     pub fn new() -> Self {
         let inner = InnerEventLoop::new();
         let outer = Rc::new(RefCell::new(inner));
@@ -49,35 +53,44 @@ impl Core {
         Core(outer)
     }
 
+    // delegate to inner loop
     pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
         self.0.borrow().run(f)
     }
 }
 
+// Our waker Token. It stores the index of the future in the wait queue
+// (see below)
 #[derive(Debug)]
 struct Token(usize);
 
 impl Wake for Token {
     fn wake(arc_self: &Arc<Token>) {
-        println!("waking {:?}", arc_self);
+        debug!("waking {:?}", arc_self);
 
         let Token(idx) = **arc_self;
 
+        // get access to the reactor by way of TLS and call wake
         REACTOR.with(|reactor| {
             if let Some(ref reactor) = *reactor.borrow() {
-                let wakeup = Wakeup { index: idx, waker: Waker::from(Arc::clone(arc_self)) };
+                let wakeup = Wakeup {
+                    index: idx,
+                    waker: Waker::from(Arc::clone(arc_self)),
+                };
                 reactor.borrow().wake(wakeup);
             }
         });
     }
 }
 
+// Task is a boxed future + task-locals
 struct Task {
     future: Box<Future<Item = (), Error = ()> + 'static>,
     locals: LocalMap,
 }
 
 impl Task {
+    // returning Ready will lead to task being removed from wait queues and droped
     fn poll<E: Executor>(&mut self, waker: Waker, exec: &mut E) -> Async<()> {
         let mut map = &mut self.locals;
         let mut context = Context::new(&mut map, &waker, exec);
@@ -92,21 +105,25 @@ impl Task {
                 Async::Pending
             }
             Err(_) => {
+                // we don't bother about error handling
                 panic!("error in future");
             }
         }
     }
 }
 
-struct Handle(Rc<RefCell<InnerEventLoop>>);
+// reactor handle, just like in real tokio
+pub struct Handle(Rc<RefCell<InnerEventLoop>>);
 
 impl Executor for Handle {
     fn spawn(
         &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>
+        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
     ) -> Result<(), SpawnError> {
-        println!("spawning from handle");
-        self.0.borrow_mut().do_spawn(f.map_err(|never| never.never_into()));
+        debug!("spawning from handle");
+        self.0
+            .borrow_mut()
+            .do_spawn(f.map_err(|never| never.never_into()));
         Ok(())
     }
 }
@@ -116,6 +133,7 @@ struct Wakeup {
     waker: Waker,
 }
 
+// The "real" event loop.
 struct InnerEventLoop {
     read: RefCell<BTreeMap<RawFd, Waker>>,
     write: RefCell<BTreeMap<RawFd, Waker>>,
@@ -145,6 +163,8 @@ impl InnerEventLoop {
         })
     }
 
+    // a future calls this to register its interest
+    // in socket's "ready to be read" events
     fn add_read_interest(&self, fd: RawFd, waker: Waker) {
         debug!("adding read interest for {}", fd);
 
@@ -159,7 +179,7 @@ impl InnerEventLoop {
         self.read.borrow_mut().remove(&fd);
     }
 
-
+    // see above
     fn remove_write_interest(&self, fd: RawFd) {
         debug!("removing write interest for {}", fd);
 
@@ -174,6 +194,7 @@ impl InnerEventLoop {
         }
     }
 
+    // waker calls this to put the future on the run queue
     fn wake(&self, wakeup: Wakeup) {
         self.run_queue.borrow_mut().push_back(wakeup);
     }
@@ -184,28 +205,39 @@ impl InnerEventLoop {
         Waker::from(w)
     }
 
+    // create a task, poll it once and push it on wait queue
     fn do_spawn<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
         let map = LocalMap::new();
         let waker = self.next_task();
-        let mut task = Task { future: Box::new(f), locals: map };
+        let mut task = Task {
+            future: Box::new(f),
+            locals: map,
+        };
         let mut handle = self.handle();
 
-        { task.poll(waker, &mut handle) };
+        {
+            task.poll(waker, &mut handle)
+        };
 
         self.wait_queue.borrow_mut().push(task)
     }
 
+    // the meat of the event loop
+    // we're using select(2) because it's simple and it's portable
     pub fn run<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
         self.do_spawn(f);
 
         loop {
             debug!("select loop start");
 
+            // event loop iteration timeout. if no descriptor
+            // is ready we continue iterating
             let mut tv: timeval = timeval {
                 tv_sec: 1,
                 tv_usec: 0,
             };
 
+            // initialize fd_sets (file descriptor sets)
             let mut read_fds: fd_set = unsafe { std::mem::zeroed() };
             let mut write_fds: fd_set = unsafe { std::mem::zeroed() };
 
@@ -214,18 +246,22 @@ impl InnerEventLoop {
 
             let mut nfds = 0;
 
+            // add read interests to read fd_sets
             for fd in self.read.borrow().keys() {
                 debug!("added fd {} for read", fd);
                 unsafe { FD_SET(*fd, &mut read_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
             }
 
+            // add write interests to write fd_sets
             for fd in self.write.borrow().keys() {
                 debug!("added fd {} for write", fd);
                 unsafe { FD_SET(*fd, &mut write_fds as *mut fd_set) };
                 nfds = std::cmp::max(nfds, fd + 1);
             }
 
+            // select will block until some event happens
+            // on the fds or timeout triggers
             let rv = unsafe {
                 select(
                     nfds,
@@ -235,6 +271,8 @@ impl InnerEventLoop {
                     &mut tv,
                 )
             };
+
+            // don't care for errors
             if rv == -1 {
                 panic!("select()");
             } else if rv == 0 {
@@ -243,6 +281,7 @@ impl InnerEventLoop {
                 debug!("data available on {} fds", rv);
             }
 
+            // check which fd it was and put appropriate future on run queue
             for (fd, waker) in self.read.borrow().iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut read_fds as *mut fd_set) };
                 debug!("fd#{} set (read)", fd);
@@ -251,6 +290,7 @@ impl InnerEventLoop {
                 }
             }
 
+            // same for write
             for (fd, waker) in self.write.borrow().iter() {
                 let is_set = unsafe { FD_ISSET(*fd, &mut write_fds as *mut fd_set) };
                 debug!("fd#{} set (write)", fd);
@@ -261,11 +301,13 @@ impl InnerEventLoop {
 
             let mut tasks_done = Vec::new();
 
+            // now pop futures from the run queue and poll them
             while let Some(w) = self.run_queue.borrow_mut().pop_front() {
                 debug!("polling task#{}", w.index);
 
                 let mut handle = self.handle();
 
+                // if a task returned Ready - we're done with it
                 if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(w.index) {
                     if let Async::Ready(_) = task.poll(w.waker, &mut handle) {
                         tasks_done.push(w.index);
@@ -273,11 +315,13 @@ impl InnerEventLoop {
                 }
             }
 
+            // remove completed tasks
             for idx in tasks_done {
                 info!("removing task#{}", idx);
                 self.wait_queue.borrow_mut().remove(idx);
             }
 
+            // stop the loop if no more tasks
             if self.wait_queue.borrow().is_empty() {
                 return;
             }
@@ -288,7 +332,7 @@ impl InnerEventLoop {
 impl Executor for InnerEventLoop {
     fn spawn(
         &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>
+        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
     ) -> Result<(), SpawnError> {
         self.do_spawn(f.map_err(|never| never.never_into()));
         Ok(())
@@ -382,8 +426,8 @@ mod tests {
 
     #[test]
     fn it_works() {
-		use futures::io::AsyncReadExt;
-		use futures::io::AsyncWriteExt;
+        use futures::io::AsyncReadExt;
+        use futures::io::AsyncWriteExt;
 
         pretty_env_logger::init();
 
