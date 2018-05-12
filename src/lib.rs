@@ -6,16 +6,13 @@ extern crate pretty_env_logger;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::mem::zeroed;
 use std::collections::VecDeque;
 
-use libc::{fd_set, select, timeval, FD_CLR, FD_ISSET, FD_SET, FD_ZERO};
+use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 use futures::{Future, FutureExt};
 use futures::executor::{Executor, SpawnError};
 use futures::io::AsyncWrite;
-use futures::io::AsyncWriteExt;
 use futures::io::AsyncRead;
-use futures::io::AsyncReadExt;
 use futures::task::Context;
 use futures::Async;
 use futures::io::Error;
@@ -23,8 +20,6 @@ use futures::Never;
 use futures::task::{Wake, Waker};
 use futures::task::LocalMap;
 
-use std::thread::sleep;
-use std::time::Duration;
 use std::os::unix::io::RawFd;
 use std::os::unix::io::AsRawFd;
 
@@ -40,7 +35,7 @@ thread_local! {
 }
 
 #[derive(Clone)]
-struct Core(Rc<RefCell<InnerEventLoop>>);
+pub struct Core(Rc<RefCell<InnerEventLoop>>);
 
 impl Core {
     pub fn new() -> Self {
@@ -302,7 +297,7 @@ impl Executor for InnerEventLoop {
 
 // AsyncTcpStream just wraps std tcp stream
 #[derive(Debug)]
-struct AsyncTcpStream(TcpStream);
+pub struct AsyncTcpStream(TcpStream);
 
 impl AsyncTcpStream {
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<AsyncTcpStream, std::io::Error> {
@@ -387,12 +382,15 @@ mod tests {
 
     #[test]
     fn it_works() {
+		use futures::io::AsyncReadExt;
+		use futures::io::AsyncWriteExt;
+
         pretty_env_logger::init();
 
         let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
         println!("running");
         let data = b"hello world\n";
-        let mut buf = vec![0; 128];
+        let buf = vec![0; 128];
         let future = stream
             .write_all(data)
             .and_then(move |(stream, _)| {
