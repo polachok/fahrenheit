@@ -26,7 +26,7 @@ use std::os::unix::io::AsRawFd;
 use std::net::ToSocketAddrs;
 
 use std::collections::BTreeMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -127,7 +127,7 @@ struct Wakeup {
 struct InnerEventLoop {
     read: RefCell<BTreeMap<RawFd, Waker>>,
     write: RefCell<BTreeMap<RawFd, Waker>>,
-    counter: RefCell<usize>,
+    counter: Cell<usize>,
     wait_queue: RefCell<Vec<Task>>,
     run_queue: RefCell<VecDeque<Wakeup>>,
 }
@@ -137,7 +137,7 @@ impl InnerEventLoop {
         InnerEventLoop {
             read: RefCell::new(BTreeMap::new()),
             write: RefCell::new(BTreeMap::new()),
-            counter: RefCell::new(0),
+            counter: Cell::new(0),
             wait_queue: RefCell::new(Vec::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
@@ -184,8 +184,9 @@ impl InnerEventLoop {
     }
 
     fn next_task(&self) -> Waker {
-        let w = Arc::new(Token(*self.counter.borrow()));
-        *self.counter.borrow_mut() += 1;
+        let counter = self.counter.get();
+        let w = Arc::new(Token(counter));
+        self.counter.set(counter + 1);
         Waker::from(w)
     }
 
