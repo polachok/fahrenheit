@@ -32,25 +32,24 @@ use std::sync::Arc;
 
 // reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
-    static REACTOR: Rc<RefCell<InnerEventLoop>> = Rc::new(RefCell::new(InnerEventLoop::new()));
+    static REACTOR: Rc<InnerEventLoop> = Rc::new(InnerEventLoop::new());
 }
 
 // The Core is just a wrapper around InnerEventLoop
 // where everything happens.
 #[derive(Clone)]
-pub struct Core(Rc<RefCell<InnerEventLoop>>);
+pub struct Core(Rc<InnerEventLoop>);
 
 impl Core {
     // Create the inner event loop and save it into thread local
     pub fn new() -> Self {
         let reactor = REACTOR.with(|ev| ev.clone());
-
         Core(reactor)
     }
 
     // delegate to inner loop
     pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
-        self.0.borrow().run(f)
+        self.0.run(f)
     }
 }
 
@@ -71,7 +70,7 @@ impl Wake for Token {
                 index: idx,
                 waker: Waker::from(arc_self.clone()),
             };
-            reactor.borrow().wake(wakeup);
+            reactor.wake(wakeup);
         });
     }
 }
@@ -106,7 +105,7 @@ impl Task {
 }
 
 // reactor handle, just like in real tokio
-pub struct Handle(Rc<RefCell<InnerEventLoop>>);
+pub struct Handle(Rc<InnerEventLoop>);
 
 impl Executor for Handle {
     fn spawn(
@@ -114,9 +113,7 @@ impl Executor for Handle {
         f: Box<Future<Item = (), Error = Never> + 'static + Send>,
     ) -> Result<(), SpawnError> {
         debug!("spawning from handle");
-        self.0
-            .borrow_mut()
-            .do_spawn(f.map_err(|never| never.never_into()));
+        self.0.do_spawn(f.map_err(|never| never.never_into()));
         Ok(())
     }
 }
@@ -343,8 +340,8 @@ impl Drop for AsyncTcpStream {
     fn drop(&mut self) {
         REACTOR.with(|reactor| {
             let fd = self.0.as_raw_fd();
-            reactor.borrow().remove_read_interest(fd);
-            reactor.borrow().remove_write_interest(fd);
+            reactor.remove_read_interest(fd);
+            reactor.remove_write_interest(fd);
         });
     }
 }
@@ -359,10 +356,7 @@ impl AsyncRead for AsyncTcpStream {
         match self.0.read(buf) {
             Ok(len) => Ok(Async::Ready(len)),
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                REACTOR.with(|reactor| {
-                    let reactor = reactor.borrow();
-                    reactor.add_read_interest(fd, waker.clone())
-                });
+                REACTOR.with(|reactor| reactor.add_read_interest(fd, waker.clone()));
 
                 Ok(Async::Pending)
             }
@@ -381,10 +375,7 @@ impl AsyncWrite for AsyncTcpStream {
         match self.0.write(buf) {
             Ok(len) => Ok(Async::Ready(len)),
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                REACTOR.with(|reactor| {
-                    let reactor = reactor.borrow();
-                    reactor.add_write_interest(fd, waker.clone())
-                });
+                REACTOR.with(|reactor| reactor.add_write_interest(fd, waker.clone()));
 
                 Ok(Async::Pending)
             }
