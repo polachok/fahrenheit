@@ -35,22 +35,8 @@ thread_local! {
     static REACTOR: Rc<InnerEventLoop> = Rc::new(InnerEventLoop::new());
 }
 
-// The Core is just a wrapper around InnerEventLoop
-// where everything happens.
-#[derive(Clone)]
-pub struct Core(Rc<InnerEventLoop>);
-
-impl Core {
-    // Create the inner event loop and save it into thread local
-    pub fn new() -> Self {
-        let reactor = REACTOR.with(|ev| ev.clone());
-        Core(reactor)
-    }
-
-    // delegate to inner loop
-    pub fn run<F: Future<Item = (), Error = ()> + 'static>(self, f: F) {
-        self.0.run(f)
-    }
+pub fn run<F: Future<Item = (), Error = ()> + 'static>(f: F) {
+    REACTOR.with(|reactor| reactor.run(f))
 }
 
 // Our waker Token. It stores the index of the future in the wait queue
@@ -419,7 +405,6 @@ mod tests {
                 })
             })
             .then(|_| Ok(()));
-        let core = Core::new();
-        core.run(future);
+        run(future);
     }
 }
