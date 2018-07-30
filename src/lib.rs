@@ -1,32 +1,33 @@
+#![feature(futures_api, pin, async_await, await_macro)]
 extern crate futures;
 extern crate libc;
 #[macro_use]
 extern crate log;
 extern crate pretty_env_logger;
 
+use std::mem::PinMut;
+
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::collections::VecDeque;
 
-use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-use futures::{Future, FutureExt};
-use futures::executor::{Executor, SpawnError};
-use futures::io::AsyncWrite;
+use futures::future::{Future, FutureObj};
 use futures::io::AsyncRead;
-use futures::task::Context;
-use futures::Async;
+use futures::io::AsyncWrite;
 use futures::io::Error;
-use futures::Never;
+use futures::task::Context;
+use futures::task::{Executor, LocalWaker, SpawnObjError};
 use futures::task::{Wake, Waker};
-use futures::task::LocalMap;
+use futures::Poll;
+use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
-use std::os::unix::io::RawFd;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 
 use std::net::ToSocketAddrs;
 
-use std::collections::BTreeMap;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -35,7 +36,7 @@ thread_local! {
     static REACTOR: Rc<InnerEventLoop> = Rc::new(InnerEventLoop::new());
 }
 
-pub fn run<F: Future<Item = (), Error = ()> + 'static>(f: F) {
+pub fn run<F: Future<Output = ()> + Send + 'static>(f: F) {
     REACTOR.with(|reactor| reactor.run(f))
 }
 
@@ -54,37 +55,33 @@ impl Wake for Token {
         REACTOR.with(|reactor| {
             let wakeup = Wakeup {
                 index: idx,
-                waker: Waker::from(arc_self.clone()),
+                waker: unsafe { futures::task::local_waker(arc_self.clone()) },
             };
             reactor.wake(wakeup);
         });
     }
 }
 
-// Task is a boxed future + task-locals
+// Task is a boxed future
 struct Task {
-    future: Box<Future<Item = (), Error = ()> + 'static>,
-    locals: LocalMap,
+    future: FutureObj<'static, ()>,
 }
 
 impl Task {
     // returning Ready will lead to task being removed from wait queues and droped
-    fn poll<E: Executor>(&mut self, waker: Waker, exec: &mut E) -> Async<()> {
-        let mut map = &mut self.locals;
-        let mut context = Context::new(&mut map, &waker, exec);
+    fn poll<E: Executor>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
+        let mut context = Context::new(&waker, exec);
 
-        match self.future.poll(&mut context) {
-            Ok(Async::Ready(_)) => {
+        let future = PinMut::new(&mut self.future);
+
+        match future.poll(&mut context) {
+            Poll::Ready(_) => {
                 debug!("future done");
-                Async::Ready(())
+                Poll::Ready(())
             }
-            Ok(Async::Pending) => {
+            Poll::Pending => {
                 debug!("future not yet ready");
-                Async::Pending
-            }
-            Err(_) => {
-                // we don't bother about error handling
-                panic!("error in future");
+                Poll::Pending
             }
         }
     }
@@ -94,19 +91,16 @@ impl Task {
 pub struct Handle(Rc<InnerEventLoop>);
 
 impl Executor for Handle {
-    fn spawn(
-        &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
-    ) -> Result<(), SpawnError> {
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
         debug!("spawning from handle");
-        self.0.do_spawn(f.map_err(|never| never.never_into()));
+        self.0.do_spawn(f);
         Ok(())
     }
 }
 
 struct Wakeup {
     index: usize,
-    waker: Waker,
+    waker: LocalWaker,
 }
 
 // The "real" event loop.
@@ -169,20 +163,19 @@ impl InnerEventLoop {
         self.run_queue.borrow_mut().push_back(wakeup);
     }
 
-    fn next_task(&self) -> Waker {
+    fn next_task(&self) -> LocalWaker {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        Waker::from(w)
+        unsafe { futures::task::local_waker(w) }
     }
 
     // create a task, poll it once and push it on wait queue
-    fn do_spawn<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
-        let map = LocalMap::new();
+    fn do_spawn<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
         let waker = self.next_task();
+        let f = Box::new(f);
         let mut task = Task {
-            future: Box::new(f),
-            locals: map,
+            future: FutureObj::new(f),
         };
         let mut handle = self.handle();
 
@@ -195,7 +188,7 @@ impl InnerEventLoop {
 
     // the meat of the event loop
     // we're using select(2) because it's simple and it's portable
-    pub fn run<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
+    pub fn run<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
         self.do_spawn(f);
 
         loop {
@@ -280,7 +273,7 @@ impl InnerEventLoop {
 
                 // if a task returned Ready - we're done with it
                 if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(w.index) {
-                    if let Async::Ready(_) = task.poll(w.waker, &mut handle) {
+                    if let Poll::Ready(_) = task.poll(w.waker, &mut handle) {
                         tasks_done.push(w.index);
                     }
                 }
@@ -301,11 +294,8 @@ impl InnerEventLoop {
 }
 
 impl Executor for InnerEventLoop {
-    fn spawn(
-        &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
-    ) -> Result<(), SpawnError> {
-        self.do_spawn(f.map_err(|never| never.never_into()));
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+        self.do_spawn(f);
         Ok(())
     }
 }
@@ -334,18 +324,18 @@ impl Drop for AsyncTcpStream {
 }
 
 impl AsyncRead for AsyncTcpStream {
-    fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Result<Async<usize>, Error> {
+    fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
         let waker = cx.waker();
 
         match self.0.read(buf) {
-            Ok(len) => Ok(Async::Ready(len)),
+            Ok(len) => Poll::Ready(Ok(len)),
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 REACTOR.with(|reactor| reactor.add_read_interest(fd, waker.clone()));
 
-                Ok(Async::Pending)
+                Poll::Pending
             }
             Err(err) => panic!("error {:?}", err),
         }
@@ -353,58 +343,60 @@ impl AsyncRead for AsyncTcpStream {
 }
 
 impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(&mut self, cx: &mut Context, buf: &[u8]) -> Result<Async<usize>, Error> {
+    fn poll_write(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();
         let waker = cx.waker();
 
         match self.0.write(buf) {
-            Ok(len) => Ok(Async::Ready(len)),
+            Ok(len) => Poll::Ready(Ok(len)),
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 REACTOR.with(|reactor| reactor.add_write_interest(fd, waker.clone()));
 
-                Ok(Async::Pending)
+                Poll::Pending
             }
             Err(err) => panic!("error {:?}", err),
         }
     }
 
-    fn poll_flush(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
+    fn poll_flush(&mut self, _cx: &mut Context) -> Poll<Result<(), Error>> {
         debug!("poll_flush() called");
-        Ok(Async::Ready(()))
+        Poll::Ready(Ok(()))
     }
 
-    fn poll_close(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
+    fn poll_close(&mut self, _cx: &mut Context) -> Poll<Result<(), Error>> {
         debug!("poll_close() called");
-        Ok(Async::Ready(()))
+        Poll::Ready(Ok(()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::io::AsyncReadExt;
+    use futures::io::AsyncWriteExt;
+    use futures::FutureExt;
+    use futures::TryFutureExt;
+
+    fn write_and_read(mut stream: AsyncTcpStream, data: String) -> Result<String, std::io::Error> {
+        await!(stream.write_all(data.as_bytes()))?;
+        println!("written '{}'", data);
+        let mut buf = vec![0; 128];
+        let len = await!(stream.read(&mut buf))?;
+        println!("read: '{}'", String::from_utf8_lossy(&buf[0..len]));
+        Ok(String::new())
+    }
 
     #[test]
     fn it_works() {
-        use futures::io::AsyncReadExt;
-        use futures::io::AsyncWriteExt;
-
         pretty_env_logger::init();
 
         let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
         println!("running");
-        let data = b"hello world\n";
-        let buf = vec![0; 128];
-        let future = stream
-            .write_all(data)
-            .and_then(move |(stream, _)| {
-                stream.read(buf).and_then(move |(_, buf, len)| {
-                    println!("READ: {}", String::from_utf8_lossy(&buf[0..len]));
-                    Ok(())
-                })
-            })
-            .then(|_| Ok(()));
+        let future = write_and_read(stream, "Hello world".to_owned())
+            .map_err(|_| ())
+            .map(|_| ());
         run(future);
     }
 }
