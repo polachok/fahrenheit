@@ -1,4 +1,4 @@
-#![feature(futures_api, pin, async_await, await_macro)]
+#![feature(futures_api, pin, async_await, await_macro, arbitrary_self_types)]
 extern crate futures;
 extern crate libc;
 #[macro_use]
@@ -9,9 +9,10 @@ use std::mem::PinMut;
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, TcpListener};
 
 use futures::future::{Future, FutureObj};
+use futures::stream::Stream;
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
 use futures::io::Error;
@@ -371,25 +372,80 @@ impl AsyncWrite for AsyncTcpStream {
     }
 }
 
+// AsyncTcpListener just wraps std tcp listener
+#[derive(Debug)]
+pub struct AsyncTcpListener(TcpListener);
+
+impl AsyncTcpListener {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<AsyncTcpListener, std::io::Error> {
+        let inner = TcpListener::bind(addr)?;
+
+        inner.set_nonblocking(true)?;
+        Ok(AsyncTcpListener(inner))
+    }
+
+    pub fn incoming(self) -> Incoming {
+        Incoming(self.0)
+    }
+}
+
+pub struct Incoming(TcpListener);
+
+impl Stream for Incoming {
+    type Item = AsyncTcpStream;
+
+    fn poll_next(self: PinMut<Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        debug!("poll_next() called");
+
+        let fd = self.0.as_raw_fd();
+        let waker = cx.waker();
+
+        match self.0.accept() {
+            Ok((conn, _)) => {
+                conn.set_nonblocking(true).unwrap();
+                Poll::Ready(Some(AsyncTcpStream(conn)))
+            },
+            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                REACTOR.with(|reactor| reactor.add_read_interest(fd, waker.clone()));
+
+                Poll::Pending
+            }
+            Err(err) => panic!("error {:?}", err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::io::AsyncReadExt;
     use futures::io::AsyncWriteExt;
     use futures::FutureExt;
+    use futures::StreamExt;
     use futures::TryFutureExt;
 
-    fn write_and_read(mut stream: AsyncTcpStream, data: String) -> Result<String, std::io::Error> {
+    async fn write_and_read(mut stream: AsyncTcpStream, data: String) -> Result<String, std::io::Error> {
         await!(stream.write_all(data.as_bytes()))?;
-        println!("written '{}'", data);
+        println!("written {}", data);
         let mut buf = vec![0; 128];
         let len = await!(stream.read(&mut buf))?;
-        println!("read: '{}'", String::from_utf8_lossy(&buf[0..len]));
+        println!("read: {}", String::from_utf8_lossy(&buf[0..len]));
         Ok(String::new())
     }
 
     #[test]
-    fn it_works() {
+    fn listener() {
+        let listener = AsyncTcpListener::bind("127.0.0.1:9000").unwrap();
+        println!("listening on 127.0.0.1:9000");
+        let server = listener.incoming()
+                        .for_each(|stream| {
+                            write_and_read(stream, "hello world\n".into()).map_err(|_| ()).map(|_| ())
+                        });
+        run(server);
+    }
+
+    #[test]
+    fn client() {
         pretty_env_logger::init();
 
         let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
