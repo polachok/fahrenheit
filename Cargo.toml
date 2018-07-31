@@ -2,6 +2,13 @@
 name = "toykio"
 version = "0.2.0"
 authors = ["plhk"]
+description = "toy tokio reactor"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/polachok/toykio"
+repository = "https://github.com/polachok/toykio"
+keywords = ["async", "futures"]
+categories = ["network-programming"]
 
 [dependencies]
 futures-preview = "0.3.0-alpha.2"
