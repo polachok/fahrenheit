@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 // reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
-    static REACTOR: Rc<InnerEventLoop> = Rc::new(InnerEventLoop::new());
+    static REACTOR: Rc<EventLoop> = Rc::new(EventLoop::new());
 }
 
 pub fn run<F: Future<Output = ()> + Send + 'static>(f: F) {
@@ -89,7 +89,7 @@ impl Task {
 }
 
 // reactor handle, just like in real tokio
-pub struct Handle(Rc<InnerEventLoop>);
+pub struct Handle(Rc<EventLoop>);
 
 impl Executor for Handle {
     fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
@@ -105,7 +105,7 @@ struct Wakeup {
 }
 
 // The "real" event loop.
-struct InnerEventLoop {
+struct EventLoop {
     read: RefCell<BTreeMap<RawFd, Waker>>,
     write: RefCell<BTreeMap<RawFd, Waker>>,
     counter: Cell<usize>,
@@ -113,9 +113,9 @@ struct InnerEventLoop {
     run_queue: RefCell<VecDeque<Wakeup>>,
 }
 
-impl InnerEventLoop {
+impl EventLoop {
     pub fn new() -> Self {
-        InnerEventLoop {
+        EventLoop {
             read: RefCell::new(BTreeMap::new()),
             write: RefCell::new(BTreeMap::new()),
             counter: Cell::new(0),
@@ -294,7 +294,7 @@ impl InnerEventLoop {
     }
 }
 
-impl Executor for InnerEventLoop {
+impl Executor for EventLoop {
     fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
         self.do_spawn(f);
         Ok(())
