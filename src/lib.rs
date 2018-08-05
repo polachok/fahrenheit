@@ -7,7 +7,6 @@ extern crate pretty_env_logger;
 
 use std::mem::PinMut;
 
-use std::collections::VecDeque;
 
 use futures::future::{Future, FutureObj};
 use futures::task::Context;
@@ -19,7 +18,7 @@ use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 use std::os::unix::io::RawFd;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{VecDeque, BTreeMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -34,8 +33,14 @@ thread_local! {
     static REACTOR: Rc<EventLoop> = Rc::new(EventLoop::new());
 }
 
+type TaskId = usize;
+
 pub fn run<F: Future<Output = ()> + Send + 'static>(f: F) {
     REACTOR.with(|reactor| reactor.run(f))
+}
+
+pub fn spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
+    REACTOR.with(|reactor| reactor.do_spawn(f))
 }
 
 // Our waker Token. It stores the index of the future in the wait queue
@@ -97,17 +102,17 @@ struct EventLoop {
     read: RefCell<BTreeMap<RawFd, Waker>>,
     write: RefCell<BTreeMap<RawFd, Waker>>,
     counter: Cell<usize>,
-    wait_queue: RefCell<Vec<Task>>,
+    wait_queue: RefCell<BTreeMap<TaskId, Task>>,
     run_queue: RefCell<VecDeque<Wakeup>>,
 }
 
 impl EventLoop {
-    pub fn new() -> Self {
+    fn new() -> Self {
         EventLoop {
             read: RefCell::new(BTreeMap::new()),
             write: RefCell::new(BTreeMap::new()),
             counter: Cell::new(0),
-            wait_queue: RefCell::new(Vec::new()),
+            wait_queue: RefCell::new(BTreeMap::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
     }
@@ -152,16 +157,16 @@ impl EventLoop {
         self.run_queue.borrow_mut().push_back(wakeup);
     }
 
-    fn next_task(&self) -> LocalWaker {
+    fn next_task(&self) -> (TaskId, LocalWaker) {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        unsafe { futures::task::local_waker(w) }
+        (counter, unsafe { futures::task::local_waker(w) })
     }
 
     // create a task, poll it once and push it on wait queue
     fn do_spawn<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
-        let waker = self.next_task();
+        let (id, waker) = self.next_task();
         let f = Box::new(f);
         let mut task = Task {
             future: FutureObj::new(f),
@@ -169,10 +174,13 @@ impl EventLoop {
         let mut handle = self.handle();
 
         {
-            task.poll(waker, &mut handle)
+            // if the task is ready immediately, don't add it to wait_queue
+            if let Poll::Ready(_) = task.poll(waker, &mut handle) {
+                return;
+            }
         };
 
-        self.wait_queue.borrow_mut().push(task)
+        self.wait_queue.borrow_mut().insert(id, task);
     }
 
     // the meat of the event loop
@@ -261,7 +269,7 @@ impl EventLoop {
                 let mut handle = self.handle();
 
                 // if a task returned Ready - we're done with it
-                if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(w.index) {
+                if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(&w.index) {
                     if let Poll::Ready(_) = task.poll(w.waker, &mut handle) {
                         tasks_done.push(w.index);
                     }
@@ -271,7 +279,7 @@ impl EventLoop {
             // remove completed tasks
             for idx in tasks_done {
                 info!("removing task#{}", idx);
-                self.wait_queue.borrow_mut().remove(idx);
+                self.wait_queue.borrow_mut().remove(&idx);
             }
 
             // stop the loop if no more tasks
