@@ -11,7 +11,7 @@ keywords = ["async", "futures"]
 categories = ["network-programming"]
 
 [dependencies]
-futures-preview = "0.3.0-alpha.2"
+futures-preview = "0.3.0-alpha.3"
 libc = "0.2"
 log = "0.4"
 pretty_env_logger = "0.2"

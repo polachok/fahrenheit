@@ -10,7 +10,7 @@ use std::mem::PinMut;
 
 use futures::future::{Future, FutureObj};
 use futures::task::Context;
-use futures::task::{Executor, LocalWaker, SpawnObjError};
+use futures::task::{Spawn, LocalWaker, SpawnObjError};
 use futures::task::{Wake, Waker};
 use futures::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
@@ -79,7 +79,7 @@ struct Task {
 
 impl Task {
     // returning Ready will lead to task being removed from wait queues and droped
-    fn poll<E: Executor>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
+    fn poll<E: Spawn>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
         let mut context = Context::new(&waker, exec);
 
         let future = PinMut::new(&mut self.future);
@@ -293,7 +293,7 @@ impl EventLoop {
 // reactor handle, just like in real tokio
 pub struct Handle(Rc<EventLoop>);
 
-impl Executor for Handle {
+impl Spawn for Handle {
     fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
         debug!("spawning from handle");
         self.0.do_spawn(f);
@@ -301,7 +301,7 @@ impl Executor for Handle {
     }
 }
 
-impl Executor for EventLoop {
+impl Spawn for EventLoop {
     fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
         self.do_spawn(f);
         Ok(())
