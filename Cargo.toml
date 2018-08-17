@@ -1,12 +1,12 @@
 [package]
-name = "toykio"
-version = "0.2.2"
+name = "fahrenheit"
+version = "4.5.1"
 authors = ["plhk"]
-description = "toy tokio reactor"
+description = "toy futures executor (formerly known as toykio)"
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/polachok/toykio"
-repository = "https://github.com/polachok/toykio"
+homepage = "https://github.com/polachok/fahrenheit"
+repository = "https://github.com/polachok/fahrenheit"
 keywords = ["async", "futures"]
 categories = ["network-programming"]
 

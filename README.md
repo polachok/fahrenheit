@@ -1,4 +1,8 @@
-# toykio: toy "tokio" implementation
+# fahrenheit (formerly known as `toykio`)
+
+**NOT AFFILIATED WITH TOKIO**
+
+***NO I DIDN'T JUST SAY TOKIO***
 
 *FOR LEARNING PURPOSES ONLY*
 

@@ -1,9 +1,9 @@
 #![feature(futures_api,async_await,await_macro)]
 extern crate futures;
-extern crate toykio;
+extern crate fahrenheit;
 
 use futures::io::{AsyncWriteExt,AsyncReadExt};
-use toykio::AsyncTcpStream;
+use fahrenheit::AsyncTcpStream;
 
 async fn http_get(addr: &str) -> Result<String, std::io::Error> {
 	let mut conn = AsyncTcpStream::connect(addr)?;
@@ -20,5 +20,5 @@ async fn get_google() {
 }
 
 fn main() {
-	toykio::run(get_google())
+	fahrenheit::run(get_google())
 }
