@@ -1,10 +1,17 @@
 [package]
-name = "toykio"
-version = "0.1.0"
+name = "fahrenheit"
+version = "4.5.1"
 authors = ["plhk"]
+description = "toy futures executor (formerly known as toykio)"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/polachok/fahrenheit"
+repository = "https://github.com/polachok/fahrenheit"
+keywords = ["async", "futures"]
+categories = ["network-programming"]
 
 [dependencies]
-futures-preview = "0.2"
+futures-preview = "0.3.0-alpha.3"
 libc = "0.2"
 log = "0.4"
 pretty_env_logger = "0.2"

@@ -1,42 +1,46 @@
+#![feature(futures_api, pin, async_await, await_macro, arbitrary_self_types)]
 extern crate futures;
 extern crate libc;
 #[macro_use]
 extern crate log;
 extern crate pretty_env_logger;
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::collections::VecDeque;
+use std::mem::PinMut;
 
-use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-use futures::{Future, FutureExt};
-use futures::executor::{Executor, SpawnError};
-use futures::io::AsyncWrite;
-use futures::io::AsyncRead;
+
+use futures::future::{Future, FutureObj};
 use futures::task::Context;
-use futures::Async;
-use futures::io::Error;
-use futures::Never;
+use futures::task::{Spawn, LocalWaker, SpawnObjError};
 use futures::task::{Wake, Waker};
-use futures::task::LocalMap;
+use futures::Poll;
+use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
 use std::os::unix::io::RawFd;
-use std::os::unix::io::AsRawFd;
 
-use std::net::ToSocketAddrs;
-
-use std::collections::BTreeMap;
 use std::cell::{Cell, RefCell};
+use std::collections::{VecDeque, BTreeMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
+mod async_tcp_stream;
+mod async_tcp_listener;
+
+pub use async_tcp_stream::AsyncTcpStream;
+pub use async_tcp_listener::AsyncTcpListener;
+
 // reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
-    static REACTOR: Rc<InnerEventLoop> = Rc::new(InnerEventLoop::new());
+    static REACTOR: Rc<EventLoop> = Rc::new(EventLoop::new());
 }
 
-pub fn run<F: Future<Item = (), Error = ()> + 'static>(f: F) {
+type TaskId = usize;
+
+pub fn run<F: Future<Output = ()> + Send + 'static>(f: F) {
     REACTOR.with(|reactor| reactor.run(f))
+}
+
+pub fn spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
+    REACTOR.with(|reactor| reactor.do_spawn(f))
 }
 
 // Our waker Token. It stores the index of the future in the wait queue
@@ -54,77 +58,61 @@ impl Wake for Token {
         REACTOR.with(|reactor| {
             let wakeup = Wakeup {
                 index: idx,
-                waker: Waker::from(arc_self.clone()),
+                waker: unsafe { futures::task::local_waker(arc_self.clone()) },
             };
             reactor.wake(wakeup);
         });
     }
 }
 
-// Task is a boxed future + task-locals
+// Wakeup notification struct stores the index of the future in the wait queue
+// and waker
+struct Wakeup {
+    index: usize,
+    waker: LocalWaker,
+}
+
+// Task is a boxed future with Output = ()
 struct Task {
-    future: Box<Future<Item = (), Error = ()> + 'static>,
-    locals: LocalMap,
+    future: FutureObj<'static, ()>,
 }
 
 impl Task {
     // returning Ready will lead to task being removed from wait queues and droped
-    fn poll<E: Executor>(&mut self, waker: Waker, exec: &mut E) -> Async<()> {
-        let mut map = &mut self.locals;
-        let mut context = Context::new(&mut map, &waker, exec);
+    fn poll<E: Spawn>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
+        let mut context = Context::new(&waker, exec);
 
-        match self.future.poll(&mut context) {
-            Ok(Async::Ready(_)) => {
+        let future = PinMut::new(&mut self.future);
+
+        match future.poll(&mut context) {
+            Poll::Ready(_) => {
                 debug!("future done");
-                Async::Ready(())
+                Poll::Ready(())
             }
-            Ok(Async::Pending) => {
+            Poll::Pending => {
                 debug!("future not yet ready");
-                Async::Pending
-            }
-            Err(_) => {
-                // we don't bother about error handling
-                panic!("error in future");
+                Poll::Pending
             }
         }
     }
 }
 
-// reactor handle, just like in real tokio
-pub struct Handle(Rc<InnerEventLoop>);
-
-impl Executor for Handle {
-    fn spawn(
-        &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
-    ) -> Result<(), SpawnError> {
-        debug!("spawning from handle");
-        self.0.do_spawn(f.map_err(|never| never.never_into()));
-        Ok(())
-    }
-}
-
-struct Wakeup {
-    index: usize,
-    waker: Waker,
-}
-
 // The "real" event loop.
-struct InnerEventLoop {
+struct EventLoop {
     read: RefCell<BTreeMap<RawFd, Waker>>,
     write: RefCell<BTreeMap<RawFd, Waker>>,
     counter: Cell<usize>,
-    wait_queue: RefCell<Vec<Task>>,
+    wait_queue: RefCell<BTreeMap<TaskId, Task>>,
     run_queue: RefCell<VecDeque<Wakeup>>,
 }
 
-impl InnerEventLoop {
-    pub fn new() -> Self {
-        InnerEventLoop {
+impl EventLoop {
+    fn new() -> Self {
+        EventLoop {
             read: RefCell::new(BTreeMap::new()),
             write: RefCell::new(BTreeMap::new()),
             counter: Cell::new(0),
-            wait_queue: RefCell::new(Vec::new()),
+            wait_queue: RefCell::new(BTreeMap::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
     }
@@ -169,33 +157,35 @@ impl InnerEventLoop {
         self.run_queue.borrow_mut().push_back(wakeup);
     }
 
-    fn next_task(&self) -> Waker {
+    fn next_task(&self) -> (TaskId, LocalWaker) {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        Waker::from(w)
+        (counter, unsafe { futures::task::local_waker(w) })
     }
 
     // create a task, poll it once and push it on wait queue
-    fn do_spawn<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
-        let map = LocalMap::new();
-        let waker = self.next_task();
+    fn do_spawn<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
+        let (id, waker) = self.next_task();
+        let f = Box::new(f);
         let mut task = Task {
-            future: Box::new(f),
-            locals: map,
+            future: FutureObj::new(f),
         };
         let mut handle = self.handle();
 
         {
-            task.poll(waker, &mut handle)
+            // if the task is ready immediately, don't add it to wait_queue
+            if let Poll::Ready(_) = task.poll(waker, &mut handle) {
+                return;
+            }
         };
 
-        self.wait_queue.borrow_mut().push(task)
+        self.wait_queue.borrow_mut().insert(id, task);
     }
 
     // the meat of the event loop
     // we're using select(2) because it's simple and it's portable
-    pub fn run<F: Future<Item = (), Error = ()> + 'static>(&self, f: F) {
+    pub fn run<F: Future<Output = ()> + Send + 'static>(&self, f: F) {
         self.do_spawn(f);
 
         loop {
@@ -272,15 +262,15 @@ impl InnerEventLoop {
 
             let mut tasks_done = Vec::new();
 
-            // now pop futures from the run queue and poll them
+            // now pop wakeup notifications from the run queue and poll associated futures
             while let Some(w) = self.run_queue.borrow_mut().pop_front() {
                 debug!("polling task#{}", w.index);
 
                 let mut handle = self.handle();
 
                 // if a task returned Ready - we're done with it
-                if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(w.index) {
-                    if let Async::Ready(_) = task.poll(w.waker, &mut handle) {
+                if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(&w.index) {
+                    if let Poll::Ready(_) = task.poll(w.waker, &mut handle) {
                         tasks_done.push(w.index);
                     }
                 }
@@ -289,7 +279,7 @@ impl InnerEventLoop {
             // remove completed tasks
             for idx in tasks_done {
                 info!("removing task#{}", idx);
-                self.wait_queue.borrow_mut().remove(idx);
+                self.wait_queue.borrow_mut().remove(&idx);
             }
 
             // stop the loop if no more tasks
@@ -300,111 +290,20 @@ impl InnerEventLoop {
     }
 }
 
-impl Executor for InnerEventLoop {
-    fn spawn(
-        &mut self,
-        f: Box<Future<Item = (), Error = Never> + 'static + Send>,
-    ) -> Result<(), SpawnError> {
-        self.do_spawn(f.map_err(|never| never.never_into()));
+// reactor handle, just like in real tokio
+pub struct Handle(Rc<EventLoop>);
+
+impl Spawn for Handle {
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+        debug!("spawning from handle");
+        self.0.do_spawn(f);
         Ok(())
     }
 }
 
-// AsyncTcpStream just wraps std tcp stream
-#[derive(Debug)]
-pub struct AsyncTcpStream(TcpStream);
-
-impl AsyncTcpStream {
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<AsyncTcpStream, std::io::Error> {
-        let inner = TcpStream::connect(addr)?;
-
-        inner.set_nonblocking(true)?;
-        Ok(AsyncTcpStream(inner))
-    }
-}
-
-impl Drop for AsyncTcpStream {
-    fn drop(&mut self) {
-        REACTOR.with(|reactor| {
-            let fd = self.0.as_raw_fd();
-            reactor.remove_read_interest(fd);
-            reactor.remove_write_interest(fd);
-        });
-    }
-}
-
-impl AsyncRead for AsyncTcpStream {
-    fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Result<Async<usize>, Error> {
-        debug!("poll_read() called");
-
-        let fd = self.0.as_raw_fd();
-        let waker = cx.waker();
-
-        match self.0.read(buf) {
-            Ok(len) => Ok(Async::Ready(len)),
-            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                REACTOR.with(|reactor| reactor.add_read_interest(fd, waker.clone()));
-
-                Ok(Async::Pending)
-            }
-            Err(err) => panic!("error {:?}", err),
-        }
-    }
-}
-
-impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(&mut self, cx: &mut Context, buf: &[u8]) -> Result<Async<usize>, Error> {
-        debug!("poll_write() called");
-
-        let fd = self.0.as_raw_fd();
-        let waker = cx.waker();
-
-        match self.0.write(buf) {
-            Ok(len) => Ok(Async::Ready(len)),
-            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                REACTOR.with(|reactor| reactor.add_write_interest(fd, waker.clone()));
-
-                Ok(Async::Pending)
-            }
-            Err(err) => panic!("error {:?}", err),
-        }
-    }
-
-    fn poll_flush(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
-        debug!("poll_flush() called");
-        Ok(Async::Ready(()))
-    }
-
-    fn poll_close(&mut self, _cx: &mut Context) -> Result<Async<()>, Error> {
-        debug!("poll_close() called");
-        Ok(Async::Ready(()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        use futures::io::AsyncReadExt;
-        use futures::io::AsyncWriteExt;
-
-        pretty_env_logger::init();
-
-        let stream = AsyncTcpStream::connect("127.0.0.1:9000").unwrap();
-        println!("running");
-        let data = b"hello world\n";
-        let buf = vec![0; 128];
-        let future = stream
-            .write_all(data)
-            .and_then(move |(stream, _)| {
-                stream.read(buf).and_then(move |(_, buf, len)| {
-                    println!("READ: {}", String::from_utf8_lossy(&buf[0..len]));
-                    Ok(())
-                })
-            })
-            .then(|_| Ok(()));
-        run(future);
+impl Spawn for EventLoop {
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+        self.do_spawn(f);
+        Ok(())
     }
 }
