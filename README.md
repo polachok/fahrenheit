@@ -1,9 +1,5 @@
 # fahrenheit (formerly known as `toykio`)
 
-**NOT AFFILIATED WITH TOKIO**
-
-***NO I DIDN'T JUST SAY TOKIO***
-
 *FOR LEARNING PURPOSES ONLY*
 
 See [futures 0.3](https://github.com/polachok/toykio/tree/futures-0.3) branch for futures 0.3 support (nightly rust only!).
