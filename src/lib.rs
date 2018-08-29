@@ -78,7 +78,7 @@ struct Task {
 }
 
 impl Task {
-    // returning Ready will lead to task being removed from wait queues and droped
+    // returning Ready will lead to task being removed from wait queues and dropped
     fn poll<E: Spawn>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
         let mut context = Context::new(&waker, exec);
 
@@ -260,26 +260,20 @@ impl EventLoop {
                 }
             }
 
-            let mut tasks_done = Vec::new();
-
             // now pop wakeup notifications from the run queue and poll associated futures
             while let Some(w) = self.run_queue.borrow_mut().pop_front() {
                 debug!("polling task#{}", w.index);
 
                 let mut handle = self.handle();
 
-                // if a task returned Ready - we're done with it
-                if let Some(ref mut task) = self.wait_queue.borrow_mut().get_mut(&w.index) {
-                    if let Poll::Ready(_) = task.poll(w.waker, &mut handle) {
-                        tasks_done.push(w.index);
+                let mut task = self.wait_queue.borrow_mut().remove(&w.index);
+                if let Some(mut task) = task {
+                    // if a task is not ready put it back
+                    if let Poll::Pending = task.poll(w.waker, &mut handle) {
+                        self.wait_queue.borrow_mut().insert(w.index, task);
                     }
+                    // otherwise just drop it
                 }
-            }
-
-            // remove completed tasks
-            for idx in tasks_done {
-                info!("removing task#{}", idx);
-                self.wait_queue.borrow_mut().remove(&idx);
             }
 
             // stop the loop if no more tasks
