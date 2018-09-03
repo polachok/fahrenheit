@@ -4,9 +4,9 @@ extern crate libc;
 #[macro_use]
 extern crate log;
 extern crate pretty_env_logger;
+extern crate core;
 
-use std::mem::PinMut;
-
+use core::pin::PinMut;
 
 use futures::future::{Future, FutureObj};
 use futures::task::Context;
