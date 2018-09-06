@@ -261,18 +261,24 @@ impl EventLoop {
             }
 
             // now pop wakeup notifications from the run queue and poll associated futures
-            while let Some(w) = self.run_queue.borrow_mut().pop_front() {
-                debug!("polling task#{}", w.index);
+            loop {
+                let w = self.run_queue.borrow_mut().pop_front();
+                match w {
+                    Some(w) => {
+                        debug!("polling task#{}", w.index);
 
-                let mut handle = self.handle();
+                        let mut handle = self.handle();
 
-                let mut task = self.wait_queue.borrow_mut().remove(&w.index);
-                if let Some(mut task) = task {
-                    // if a task is not ready put it back
-                    if let Poll::Pending = task.poll(w.waker, &mut handle) {
-                        self.wait_queue.borrow_mut().insert(w.index, task);
-                    }
-                    // otherwise just drop it
+                        let mut task = self.wait_queue.borrow_mut().remove(&w.index);
+                        if let Some(mut task) = task {
+                            // if a task is not ready put it back
+                            if let Poll::Pending = task.poll(w.waker, &mut handle) {
+                                self.wait_queue.borrow_mut().insert(w.index, task);
+                            }
+                            // otherwise just drop it
+                        }
+                    },
+                    None => break,
                 }
             }
 
