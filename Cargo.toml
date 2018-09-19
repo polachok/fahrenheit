@@ -11,6 +11,7 @@ homepage = "https://github.com/polachok/fahrenheit"
 repository = "https://github.com/polachok/fahrenheit"
 keywords = ["async", "futures"]
 categories = ["network-programming"]
+edition = "2018"
 
 [dependencies]
 futures-preview = "0.3.0-alpha.3"
