@@ -6,10 +6,10 @@ use std::io::{self, Read, Write};
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
 use futures::io::Error;
-use futures::task::Context;
+use futures::task::LocalWaker;
 use futures::Poll;
 
-use REACTOR;
+use crate::REACTOR;
 
 // AsyncTcpStream just wraps std tcp stream
 #[derive(Debug)]
@@ -40,11 +40,10 @@ impl Drop for AsyncTcpStream {
 }
 
 impl AsyncRead for AsyncTcpStream {
-    fn poll_read(&mut self, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+    fn poll_read(&mut self, waker: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
-        let waker = cx.waker();
 
         match self.0.read(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
@@ -59,11 +58,10 @@ impl AsyncRead for AsyncTcpStream {
 }
 
 impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(&mut self, waker: &LocalWaker, buf: &[u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();
-        let waker = cx.waker();
 
         match self.0.write(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
@@ -76,12 +74,12 @@ impl AsyncWrite for AsyncTcpStream {
         }
     }
 
-    fn poll_flush(&mut self, _cx: &mut Context) -> Poll<Result<(), Error>> {
+    fn poll_flush(&mut self, _lw: &LocalWaker) -> Poll<Result<(), Error>> {
         debug!("poll_flush() called");
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(&mut self, _cx: &mut Context) -> Poll<Result<(), Error>> {
+    fn poll_close(&mut self, _lw: &LocalWaker) -> Poll<Result<(), Error>> {
         debug!("poll_close() called");
         Poll::Ready(Ok(()))
     }

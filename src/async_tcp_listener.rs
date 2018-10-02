@@ -1,14 +1,14 @@
+use std::io;
 use std::net::TcpListener;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
 use futures::Poll;
-use futures::task::Context;
-use AsyncTcpStream;
-use REACTOR;
-use std::io;
-use core::pin::PinMut;
-
 use futures::Stream;
+use futures::task::LocalWaker;
+use core::pin::Pin;
+
+use crate::AsyncTcpStream;
+use crate::REACTOR;
 
 // AsyncTcpListener just wraps std tcp listener
 #[derive(Debug)]
@@ -32,11 +32,10 @@ pub struct Incoming(TcpListener);
 impl Stream for Incoming {
     type Item = AsyncTcpStream;
 
-    fn poll_next(self: PinMut<Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, waker: &LocalWaker) -> Poll<Option<Self::Item>> {
         debug!("poll_next() called");
 
         let fd = self.0.as_raw_fd();
-        let waker = cx.waker();
 
         match self.0.accept() {
             Ok((conn, _)) => {

@@ -6,12 +6,11 @@ extern crate log;
 extern crate pretty_env_logger;
 extern crate core;
 
-use core::pin::PinMut;
+use core::pin::Pin;
 
 use futures::future::{Future, FutureObj};
-use futures::task::Context;
-use futures::task::{Spawn, LocalWaker, SpawnObjError};
-use futures::task::{Wake, Waker};
+use futures::task::{Spawn, SpawnError, LocalWaker};
+use futures::task::Wake;
 use futures::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
@@ -25,8 +24,8 @@ use std::sync::Arc;
 mod async_tcp_stream;
 mod async_tcp_listener;
 
-pub use async_tcp_stream::AsyncTcpStream;
-pub use async_tcp_listener::AsyncTcpListener;
+pub use crate::async_tcp_stream::AsyncTcpStream;
+pub use crate::async_tcp_listener::AsyncTcpListener;
 
 // reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
@@ -79,12 +78,10 @@ struct Task {
 
 impl Task {
     // returning Ready will lead to task being removed from wait queues and dropped
-    fn poll<E: Spawn>(&mut self, waker: LocalWaker, exec: &mut E) -> Poll<()> {
-        let mut context = Context::new(&waker, exec);
+    fn poll(&mut self, waker: LocalWaker) -> Poll<()> {
+        let future = Pin::new(&mut self.future);
 
-        let future = PinMut::new(&mut self.future);
-
-        match future.poll(&mut context) {
+        match future.poll(&waker) {
             Poll::Ready(_) => {
                 debug!("future done");
                 Poll::Ready(())
@@ -99,8 +96,8 @@ impl Task {
 
 // The "real" event loop.
 struct EventLoop {
-    read: RefCell<BTreeMap<RawFd, Waker>>,
-    write: RefCell<BTreeMap<RawFd, Waker>>,
+    read: RefCell<BTreeMap<RawFd, LocalWaker>>,
+    write: RefCell<BTreeMap<RawFd, LocalWaker>>,
     counter: Cell<usize>,
     wait_queue: RefCell<BTreeMap<TaskId, Task>>,
     run_queue: RefCell<VecDeque<Wakeup>>,
@@ -123,7 +120,7 @@ impl EventLoop {
 
     // a future calls this to register its interest
     // in socket's "ready to be read" events
-    fn add_read_interest(&self, fd: RawFd, waker: Waker) {
+    fn add_read_interest(&self, fd: RawFd, waker: LocalWaker) {
         debug!("adding read interest for {}", fd);
 
         if !self.read.borrow().contains_key(&fd) {
@@ -144,7 +141,7 @@ impl EventLoop {
         self.write.borrow_mut().remove(&fd);
     }
 
-    fn add_write_interest(&self, fd: RawFd, waker: Waker) {
+    fn add_write_interest(&self, fd: RawFd, waker: LocalWaker) {
         debug!("adding write interest for {}", fd);
 
         if !self.write.borrow().contains_key(&fd) {
@@ -171,11 +168,10 @@ impl EventLoop {
         let mut task = Task {
             future: FutureObj::new(f),
         };
-        let mut handle = self.handle();
 
         {
             // if the task is ready immediately, don't add it to wait_queue
-            if let Poll::Ready(_) = task.poll(waker, &mut handle) {
+            if let Poll::Ready(_) = task.poll(waker) {
                 return;
             }
         };
@@ -267,12 +263,10 @@ impl EventLoop {
                     Some(w) => {
                         debug!("polling task#{}", w.index);
 
-                        let mut handle = self.handle();
-
-                        let mut task = self.wait_queue.borrow_mut().remove(&w.index);
+                        let task = self.wait_queue.borrow_mut().remove(&w.index);
                         if let Some(mut task) = task {
                             // if a task is not ready put it back
-                            if let Poll::Pending = task.poll(w.waker, &mut handle) {
+                            if let Poll::Pending = task.poll(w.waker) {
                                 self.wait_queue.borrow_mut().insert(w.index, task);
                             }
                             // otherwise just drop it
@@ -294,7 +288,7 @@ impl EventLoop {
 pub struct Handle(Rc<EventLoop>);
 
 impl Spawn for Handle {
-    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
         debug!("spawning from handle");
         self.0.do_spawn(f);
         Ok(())
@@ -302,7 +296,7 @@ impl Spawn for Handle {
 }
 
 impl Spawn for EventLoop {
-    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnObjError> {
+    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
         self.do_spawn(f);
         Ok(())
     }
