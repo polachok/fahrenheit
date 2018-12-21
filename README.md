@@ -1,5 +1,7 @@
 # fahrenheit (formerly known as `toykio`)
 
+[![Build Status](https://travis-ci.com/polachok/fahrenheit.svg?branch=master)](https://travis-ci.com/polachok/fahrenheit)
+
 *FOR LEARNING PURPOSES ONLY*
 
 This is a greatly simplified implementation
