@@ -1,4 +1,4 @@
-#![feature(futures_api, pin, async_await, await_macro, arbitrary_self_types)]
+#![feature(futures_api, async_await, await_macro, arbitrary_self_types)]
 extern crate futures;
 extern crate libc;
 #[macro_use]
@@ -112,10 +112,6 @@ impl EventLoop {
             wait_queue: RefCell::new(BTreeMap::new()),
             run_queue: RefCell::new(VecDeque::new()),
         }
-    }
-
-    pub fn handle(&self) -> Handle {
-        REACTOR.with(|reactor| Handle(reactor.clone()))
     }
 
     // a future calls this to register its interest
