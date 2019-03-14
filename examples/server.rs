@@ -1,11 +1,11 @@
-#![feature(futures_api,async_await,await_macro)]
-extern crate futures;
+#![feature(futures_api, async_await, await_macro)]
 extern crate fahrenheit;
+extern crate futures;
 
+use fahrenheit::AsyncTcpListener;
+use fahrenheit::AsyncTcpStream;
 use futures::io::AsyncReadExt;
 use futures::stream::StreamExt;
-use fahrenheit::AsyncTcpStream;
-use fahrenheit::AsyncTcpListener;
 use std::net::SocketAddr;
 
 async fn listen(addr: &str) {
@@ -19,7 +19,7 @@ async fn listen(addr: &str) {
 }
 
 async fn process(mut stream: AsyncTcpStream) {
-    let mut buf = vec![0;10];
+    let mut buf = vec![0; 10];
     await!(stream.read_exact(&mut buf));
     println!("{}", String::from_utf8_lossy(&buf));
 }

@@ -1,6 +1,6 @@
-use std::net::ToSocketAddrs;
-use std::net::TcpStream;
 use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
 
 use futures::io::AsyncRead;
@@ -24,8 +24,8 @@ impl AsyncTcpStream {
     }
 
     pub fn from_std(stream: TcpStream) -> Result<AsyncTcpStream, io::Error> {
-       stream.set_nonblocking(true)?;
-       Ok(AsyncTcpStream(stream))
+        stream.set_nonblocking(true)?;
+        Ok(AsyncTcpStream(stream))
     }
 }
 

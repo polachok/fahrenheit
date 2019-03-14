@@ -1,11 +1,11 @@
+use core::pin::Pin;
+use futures::task::Waker;
+use futures::Poll;
+use futures::Stream;
 use std::io;
 use std::net::TcpListener;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
-use futures::Poll;
-use futures::Stream;
-use futures::task::Waker;
-use core::pin::Pin;
 
 use crate::AsyncTcpStream;
 use crate::REACTOR;
@@ -41,7 +41,7 @@ impl Stream for Incoming {
             Ok((conn, _)) => {
                 let stream = AsyncTcpStream::from_std(conn).unwrap();
                 Poll::Ready(Some(stream))
-            },
+            }
             Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
                 REACTOR.with(|reactor| reactor.add_read_interest(fd, waker.clone()));
 

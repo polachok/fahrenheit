@@ -3,29 +3,29 @@ extern crate futures;
 extern crate libc;
 #[macro_use]
 extern crate log;
-extern crate pretty_env_logger;
 extern crate core;
+extern crate pretty_env_logger;
 
 use core::pin::Pin;
 
 use futures::future::{Future, FutureObj};
-use futures::task::{Spawn, SpawnError, Waker};
 use futures::task::ArcWake;
+use futures::task::{Spawn, SpawnError, Waker};
 use futures::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
 use std::os::unix::io::RawFd;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{VecDeque, BTreeMap};
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-mod async_tcp_stream;
 mod async_tcp_listener;
+mod async_tcp_stream;
 
-pub use crate::async_tcp_stream::AsyncTcpStream;
 pub use crate::async_tcp_listener::AsyncTcpListener;
+pub use crate::async_tcp_stream::AsyncTcpStream;
 
 // reactor lives in a thread local variable. Here's where all magic happens!
 thread_local! {
@@ -267,7 +267,7 @@ impl EventLoop {
                             }
                             // otherwise just drop it
                         }
-                    },
+                    }
                     None => break,
                 }
             }
