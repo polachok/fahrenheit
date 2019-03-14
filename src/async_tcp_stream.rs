@@ -1,12 +1,12 @@
 use std::net::ToSocketAddrs;
 use std::net::TcpStream;
-use std::os::unix::io::AsRawFd;
 use std::io::{self, Read, Write};
+use std::os::unix::io::AsRawFd;
 
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
 use futures::io::Error;
-use futures::task::LocalWaker;
+use futures::task::Waker;
 use futures::Poll;
 
 use crate::REACTOR;
@@ -24,8 +24,8 @@ impl AsyncTcpStream {
     }
 
     pub fn from_std(stream: TcpStream) -> Result<AsyncTcpStream, io::Error> {
-    	stream.set_nonblocking(true)?;
-    	Ok(AsyncTcpStream(stream))
+       stream.set_nonblocking(true)?;
+       Ok(AsyncTcpStream(stream))
     }
 }
 
@@ -40,7 +40,7 @@ impl Drop for AsyncTcpStream {
 }
 
 impl AsyncRead for AsyncTcpStream {
-    fn poll_read(&mut self, waker: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+    fn poll_read(&mut self, waker: &Waker, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
@@ -58,7 +58,7 @@ impl AsyncRead for AsyncTcpStream {
 }
 
 impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(&mut self, waker: &LocalWaker, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();
@@ -74,12 +74,12 @@ impl AsyncWrite for AsyncTcpStream {
         }
     }
 
-    fn poll_flush(&mut self, _lw: &LocalWaker) -> Poll<Result<(), Error>> {
+    fn poll_flush(&mut self, _lw: &Waker) -> Poll<Result<(), Error>> {
         debug!("poll_flush() called");
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(&mut self, _lw: &LocalWaker) -> Poll<Result<(), Error>> {
+    fn poll_close(&mut self, _lw: &Waker) -> Poll<Result<(), Error>> {
         debug!("poll_close() called");
         Poll::Ready(Ok(()))
     }

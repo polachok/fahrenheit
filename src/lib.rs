@@ -9,8 +9,8 @@ extern crate core;
 use core::pin::Pin;
 
 use futures::future::{Future, FutureObj};
-use futures::task::{Spawn, SpawnError, LocalWaker};
-use futures::task::Wake;
+use futures::task::{Spawn, SpawnError, Waker};
+use futures::task::ArcWake;
 use futures::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
@@ -47,7 +47,7 @@ pub fn spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
 #[derive(Debug)]
 struct Token(usize);
 
-impl Wake for Token {
+impl ArcWake for Token {
     fn wake(arc_self: &Arc<Token>) {
         debug!("waking {:?}", arc_self);
 
@@ -57,7 +57,7 @@ impl Wake for Token {
         REACTOR.with(|reactor| {
             let wakeup = Wakeup {
                 index: idx,
-                waker: unsafe { futures::task::local_waker(arc_self.clone()) },
+                waker: arc_self.clone().into_waker(),
             };
             reactor.wake(wakeup);
         });
@@ -68,7 +68,7 @@ impl Wake for Token {
 // and waker
 struct Wakeup {
     index: usize,
-    waker: LocalWaker,
+    waker: Waker,
 }
 
 // Task is a boxed future with Output = ()
@@ -78,7 +78,7 @@ struct Task {
 
 impl Task {
     // returning Ready will lead to task being removed from wait queues and dropped
-    fn poll(&mut self, waker: LocalWaker) -> Poll<()> {
+    fn poll(&mut self, waker: Waker) -> Poll<()> {
         let future = Pin::new(&mut self.future);
 
         match future.poll(&waker) {
@@ -96,8 +96,8 @@ impl Task {
 
 // The "real" event loop.
 struct EventLoop {
-    read: RefCell<BTreeMap<RawFd, LocalWaker>>,
-    write: RefCell<BTreeMap<RawFd, LocalWaker>>,
+    read: RefCell<BTreeMap<RawFd, Waker>>,
+    write: RefCell<BTreeMap<RawFd, Waker>>,
     counter: Cell<usize>,
     wait_queue: RefCell<BTreeMap<TaskId, Task>>,
     run_queue: RefCell<VecDeque<Wakeup>>,
@@ -116,7 +116,7 @@ impl EventLoop {
 
     // a future calls this to register its interest
     // in socket's "ready to be read" events
-    fn add_read_interest(&self, fd: RawFd, waker: LocalWaker) {
+    fn add_read_interest(&self, fd: RawFd, waker: Waker) {
         debug!("adding read interest for {}", fd);
 
         if !self.read.borrow().contains_key(&fd) {
@@ -137,7 +137,7 @@ impl EventLoop {
         self.write.borrow_mut().remove(&fd);
     }
 
-    fn add_write_interest(&self, fd: RawFd, waker: LocalWaker) {
+    fn add_write_interest(&self, fd: RawFd, waker: Waker) {
         debug!("adding write interest for {}", fd);
 
         if !self.write.borrow().contains_key(&fd) {
@@ -150,11 +150,11 @@ impl EventLoop {
         self.run_queue.borrow_mut().push_back(wakeup);
     }
 
-    fn next_task(&self) -> (TaskId, LocalWaker) {
+    fn next_task(&self) -> (TaskId, Waker) {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        (counter, unsafe { futures::task::local_waker(w) })
+        (counter, w.into_waker())
     }
 
     // create a task, poll it once and push it on wait queue
