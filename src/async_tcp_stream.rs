@@ -2,11 +2,12 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
+use std::task::Context;
+use std::pin::Pin;
 
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
 use futures::io::Error;
-use futures::task::Waker;
 use futures::Poll;
 
 use crate::REACTOR;
@@ -40,10 +41,11 @@ impl Drop for AsyncTcpStream {
 }
 
 impl AsyncRead for AsyncTcpStream {
-    fn poll_read(&mut self, waker: &Waker, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+    fn poll_read(mut self: Pin<&mut Self>, ctx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
+        let waker = ctx.waker();
 
         match self.0.read(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
@@ -58,10 +60,11 @@ impl AsyncRead for AsyncTcpStream {
 }
 
 impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(mut self: Pin<&mut Self>, ctx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
         debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();
+        let waker = ctx.waker();
 
         match self.0.write(buf) {
             Ok(len) => Poll::Ready(Ok(len)),
@@ -74,12 +77,12 @@ impl AsyncWrite for AsyncTcpStream {
         }
     }
 
-    fn poll_flush(&mut self, _lw: &Waker) -> Poll<Result<(), Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _lw: &mut Context) -> Poll<Result<(), Error>> {
         debug!("poll_flush() called");
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(&mut self, _lw: &Waker) -> Poll<Result<(), Error>> {
+    fn poll_close(self: Pin<&mut Self>, _lw: &mut Context) -> Poll<Result<(), Error>> {
         debug!("poll_close() called");
         Poll::Ready(Ok(()))
     }

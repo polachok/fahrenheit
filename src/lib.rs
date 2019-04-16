@@ -15,6 +15,7 @@ use futures::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
 use std::os::unix::io::RawFd;
+use std::task::Context;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
@@ -48,7 +49,7 @@ pub fn spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
 struct Token(usize);
 
 impl ArcWake for Token {
-    fn wake(arc_self: &Arc<Token>) {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
         debug!("waking {:?}", arc_self);
 
         let Token(idx) = **arc_self;
@@ -80,8 +81,9 @@ impl Task {
     // returning Ready will lead to task being removed from wait queues and dropped
     fn poll(&mut self, waker: Waker) -> Poll<()> {
         let future = Pin::new(&mut self.future);
+        let mut ctx = Context::from_waker(&waker);
 
-        match future.poll(&waker) {
+        match future.poll(&mut ctx) {
             Poll::Ready(_) => {
                 debug!("future done");
                 Poll::Ready(())
@@ -239,7 +241,7 @@ impl EventLoop {
                 let is_set = unsafe { FD_ISSET(*fd, &mut read_fds as *mut fd_set) };
                 debug!("fd#{} set (read)", fd);
                 if is_set {
-                    waker.wake();
+                    waker.wake_by_ref();
                 }
             }
 
@@ -248,7 +250,7 @@ impl EventLoop {
                 let is_set = unsafe { FD_ISSET(*fd, &mut write_fds as *mut fd_set) };
                 debug!("fd#{} set (write)", fd);
                 if is_set {
-                    waker.wake();
+                    waker.wake_by_ref();
                 }
             }
 
