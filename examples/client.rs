@@ -1,4 +1,4 @@
-#![feature(futures_api, async_await, await_macro)]
+#![feature(async_await)]
 extern crate fahrenheit;
 extern crate futures;
 
@@ -7,11 +7,11 @@ use futures::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn http_get(addr: &str) -> Result<String, std::io::Error> {
     let mut conn = AsyncTcpStream::connect(addr)?;
-    let _ = await!(conn.write_all(b"GET / HTTP/1.0\r\n\r\n"))?;
+    let _ = conn.write_all(b"GET / HTTP/1.0\r\n\r\n").await?;
     let mut page = Vec::new();
     loop {
         let mut buf = vec![0; 128];
-        let len = await!(conn.read(&mut buf))?;
+        let len = conn.read(&mut buf).await?;
         if len == 0 {
             break;
         }
@@ -22,7 +22,7 @@ async fn http_get(addr: &str) -> Result<String, std::io::Error> {
 }
 
 async fn get_google() {
-    let res = await!(http_get("google.com:80")).unwrap();
+    let res = http_get("google.com:80").await.unwrap();
     println!("{}", res);
 }
 

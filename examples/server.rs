@@ -1,4 +1,4 @@
-#![feature(futures_api, async_await, await_macro)]
+#![feature(async_await)]
 extern crate fahrenheit;
 extern crate futures;
 
@@ -13,14 +13,14 @@ async fn listen(addr: &str) {
     let listener = AsyncTcpListener::bind(addr).unwrap();
     let mut incoming = listener.incoming();
 
-    while let Some(stream) = await!(incoming.next()) {
+    while let Some(stream) = incoming.next().await {
         fahrenheit::spawn(process(stream));
     }
 }
 
 async fn process(mut stream: AsyncTcpStream) {
     let mut buf = vec![0; 10];
-    await!(stream.read_exact(&mut buf));
+    let _ = stream.read_exact(&mut buf).await;
     println!("{}", String::from_utf8_lossy(&buf));
 }
 

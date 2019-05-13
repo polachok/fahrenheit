@@ -1,4 +1,4 @@
-#![feature(futures_api, async_await, await_macro, arbitrary_self_types)]
+#![feature(async_await, arbitrary_self_types)]
 extern crate futures;
 extern crate libc;
 #[macro_use]
