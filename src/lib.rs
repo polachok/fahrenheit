@@ -161,12 +161,10 @@ impl EventLoop {
             future: FutureObj::new(f),
         };
 
-        {
-            // if the task is ready immediately, don't add it to wait_queue
-            if let Poll::Ready(_) = task.poll(waker) {
-                return;
-            }
-        };
+        // if the task is ready immediately, don't add it to wait_queue
+        if let Poll::Ready(_) = task.poll(waker) {
+            return;
+        }
 
         self.wait_queue.borrow_mut().insert(id, task);
     }

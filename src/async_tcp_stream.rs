@@ -2,8 +2,8 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
-use std::task::Context;
 use std::pin::Pin;
+use std::task::Context;
 
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
@@ -43,7 +43,11 @@ impl Drop for AsyncTcpStream {
 }
 
 impl AsyncRead for AsyncTcpStream {
-    fn poll_read(mut self: Pin<&mut Self>, ctx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        ctx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, Error>> {
         debug!("poll_read() called");
 
         let fd = self.0.as_raw_fd();
@@ -62,7 +66,11 @@ impl AsyncRead for AsyncTcpStream {
 }
 
 impl AsyncWrite for AsyncTcpStream {
-    fn poll_write(mut self: Pin<&mut Self>, ctx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        ctx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
         debug!("poll_write() called");
 
         let fd = self.0.as_raw_fd();

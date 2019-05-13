@@ -1,8 +1,8 @@
-use std::pin::Pin;
 use std::io;
 use std::net::TcpListener;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
+use std::pin::Pin;
 use std::task::Context;
 
 use futures::Poll;
