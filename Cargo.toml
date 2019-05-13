@@ -1,6 +1,6 @@
 [package]
 name = "fahrenheit"
-version = "4.5.2"
+version = "4.5.3"
 authors = ["plhk"]
 description = "toy futures executor (formerly known as toykio)"
 license = "MIT"
