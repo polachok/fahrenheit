@@ -1,12 +1,6 @@
 #![feature(async_await, arbitrary_self_types)]
-extern crate futures;
-extern crate libc;
-#[macro_use]
-extern crate log;
-extern crate core;
-extern crate pretty_env_logger;
-
-use core::pin::Pin;
+use log::debug;
+use std::pin::Pin;
 
 use futures::future::{Future, FutureObj};
 use futures::task::ArcWake;

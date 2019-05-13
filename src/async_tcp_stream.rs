@@ -10,6 +10,8 @@ use futures::io::AsyncWrite;
 use futures::io::Error;
 use futures::Poll;
 
+use log::debug;
+
 use crate::REACTOR;
 
 // AsyncTcpStream just wraps std tcp stream
