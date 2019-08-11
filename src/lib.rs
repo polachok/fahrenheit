@@ -52,7 +52,7 @@ impl ArcWake for Token {
         REACTOR.with(|reactor| {
             let wakeup = Wakeup {
                 index: idx,
-                waker: arc_self.clone().into_waker(),
+                waker: futures::task::waker(arc_self.clone()),
             };
             reactor.wake(wakeup);
         });
@@ -150,7 +150,7 @@ impl EventLoop {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        (counter, w.into_waker())
+        (counter, futures::task::waker(w))
     }
 
     // create a task, poll it once and push it on wait queue
