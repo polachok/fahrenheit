@@ -1,11 +1,10 @@
-#![feature(async_await, arbitrary_self_types)]
 use log::debug;
 use std::pin::Pin;
 
 use futures::future::{Future, FutureObj};
 use futures::task::ArcWake;
 use futures::task::{Spawn, SpawnError, Waker};
-use futures::Poll;
+use futures::task::Poll;
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
 use std::os::unix::io::RawFd;
@@ -278,7 +277,7 @@ impl EventLoop {
 pub struct Handle(Rc<EventLoop>);
 
 impl Spawn for Handle {
-    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
+    fn spawn_obj(&self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
         debug!("spawning from handle");
         self.0.do_spawn(f);
         Ok(())
@@ -286,7 +285,7 @@ impl Spawn for Handle {
 }
 
 impl Spawn for EventLoop {
-    fn spawn_obj(&mut self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
+    fn spawn_obj(&self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
         self.do_spawn(f);
         Ok(())
     }

@@ -8,7 +8,7 @@ use std::task::Context;
 use futures::io::AsyncRead;
 use futures::io::AsyncWrite;
 use futures::io::Error;
-use futures::Poll;
+use futures::task::Poll;
 
 use log::debug;
 

@@ -1,6 +1,6 @@
 [package]
 name = "fahrenheit"
-version = "4.5.3"
+version = "4.5.4"
 authors = ["plhk"]
 description = "toy futures executor (formerly known as toykio)"
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["network-programming"]
 edition = "2018"
 
 [dependencies]
-futures-preview = "0.3.0-alpha.18"
+futures = "0.3"
 libc = "0.2"
 log = "0.4"
 pretty_env_logger = "0.2"

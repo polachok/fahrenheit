@@ -5,7 +5,7 @@ use std::os::unix::io::AsRawFd;
 use std::pin::Pin;
 use std::task::Context;
 
-use futures::Poll;
+use futures::task::Poll;
 use futures::Stream;
 
 use crate::AsyncTcpStream;

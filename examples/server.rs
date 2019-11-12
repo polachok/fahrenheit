@@ -1,4 +1,3 @@
-#![feature(async_await)]
 extern crate fahrenheit;
 extern crate futures;
 
