@@ -1,6 +1,3 @@
-extern crate fahrenheit;
-extern crate futures;
-
 use fahrenheit::AsyncTcpStream;
 use futures::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -4,9 +4,9 @@ use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
 use std::pin::Pin;
 use std::task::Context;
+use std::task::Poll;
 
-use futures::task::Poll;
-use futures::Stream;
+use futures_core::Stream;
 
 use crate::AsyncTcpStream;
 use crate::REACTOR;

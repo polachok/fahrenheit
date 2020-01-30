@@ -1,14 +1,12 @@
 use log::debug;
+use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
-use futures::future::{Future, FutureObj};
-use futures::task::ArcWake;
-use futures::task::{Spawn, SpawnError, Waker};
-use futures::task::Poll;
+use futures_task::{ArcWake, FutureObj};
 use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
 use std::os::unix::io::RawFd;
-use std::task::Context;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
@@ -51,7 +49,7 @@ impl ArcWake for Token {
         REACTOR.with(|reactor| {
             let wakeup = Wakeup {
                 index: idx,
-                waker: futures::task::waker(arc_self.clone()),
+                waker: futures_task::waker(arc_self.clone()),
             };
             reactor.wake(wakeup);
         });
@@ -149,7 +147,7 @@ impl EventLoop {
         let counter = self.counter.get();
         let w = Arc::new(Token(counter));
         self.counter.set(counter + 1);
-        (counter, futures::task::waker(w))
+        (counter, futures_task::waker(w))
     }
 
     // create a task, poll it once and push it on wait queue
@@ -270,23 +268,5 @@ impl EventLoop {
                 return;
             }
         }
-    }
-}
-
-// reactor handle, just like in real tokio
-pub struct Handle(Rc<EventLoop>);
-
-impl Spawn for Handle {
-    fn spawn_obj(&self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
-        debug!("spawning from handle");
-        self.0.do_spawn(f);
-        Ok(())
-    }
-}
-
-impl Spawn for EventLoop {
-    fn spawn_obj(&self, f: FutureObj<'static, ()>) -> Result<(), SpawnError> {
-        self.do_spawn(f);
-        Ok(())
     }
 }
