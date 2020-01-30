@@ -1,14 +1,13 @@
+use std::io::Error;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::os::unix::io::AsRawFd;
 use std::pin::Pin;
 use std::task::Context;
+use std::task::Poll;
 
-use futures::io::AsyncRead;
-use futures::io::AsyncWrite;
-use futures::io::Error;
-use futures::task::Poll;
+use futures_io::{AsyncRead, AsyncWrite};
 
 use log::debug;
 

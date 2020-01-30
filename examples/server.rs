@@ -1,11 +1,9 @@
-extern crate fahrenheit;
-extern crate futures;
+use std::net::SocketAddr;
 
 use fahrenheit::AsyncTcpListener;
 use fahrenheit::AsyncTcpStream;
 use futures::io::AsyncReadExt;
 use futures::stream::StreamExt;
-use std::net::SocketAddr;
 
 async fn listen(addr: &str) {
     let addr: SocketAddr = addr.parse().unwrap();
